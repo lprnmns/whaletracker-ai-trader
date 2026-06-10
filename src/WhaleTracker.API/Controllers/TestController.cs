@@ -1,6 +1,8 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using System.IO;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using WhaleTracker.Core.Interfaces;
 using WhaleTracker.Core.Models;
@@ -12,6 +14,7 @@ namespace WhaleTracker.API.Controllers;
 /// API bağlantılarını test etmek için
 /// </summary>
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public class TestController : ControllerBase
 {
@@ -921,88 +924,23 @@ public class TestController : ControllerBase
         decimal startBalance = 0;
         try
         {
-            var accountInfo = await _okxService.GetAccountInfoAsync();
-            startBalance = accountInfo.TotalUsd;
-            
+            _logger.LogInformation("0. Start balance aliniyor...");
+
+            var startAccount = await _okxService.GetAccountInfoAsync();
+            startBalance = startAccount.TotalUsd;
+
             testResults.Add(new
             {
-                Step = "0️⃣ BAŞLANGIÇ DURUMU",
-                Status = "✅",
-                Balance = $"${startBalance:F2}",
-                OpenPositions = accountInfo.ActivePositions.Count
+                Step = "0. START BALANCE",
+                Status = "OK",
+                StartBalance = $"${startBalance:F2}",
+                OpenPositions = startAccount.ActivePositions.Count
             });
         }
         catch (Exception ex)
         {
-            testResults.Add(new { Step = "0️⃣ BAŞLANGIÇ DURUMU", Status = "❌", Error = ex.Message });
+            testResults.Add(new { Step = "0. START BALANCE", Status = "ERROR", Error = ex.Message });
         }
-
-        await Task.Delay(500); // Rate limit için bekle
-
-        // ================================================================
-        // AŞAMA 1: DOGE LONG AÇ (2 USDT, 3x)
-        // ================================================================
-        try
-        {
-            _logger.LogInformation("1️⃣ DOGE LONG açılıyor...");
-            
-            // Önce hesapla
-            var calculation = await _okxService.CalculateOrderAsync("DOGE", 2, 3, "LONG");
-            
-            // Kaldıraç ayarla
-            await _okxService.SetLeverageAsync("DOGE", 3);
-            
-            // Emir gönder
-            var result = await _okxService.PlaceMarketOrderAsync("DOGE", "buy", "long", calculation.Contracts);
-            
-            testResults.Add(new
-            {
-                Step = "1️⃣ DOGE LONG AÇ",
-                Status = result.Success ? "✅ BAŞARILI" : "❌ BAŞARISIZ",
-                OrderId = result.OrderId,
-                Contracts = calculation.Contracts,
-                CoinAmount = $"{calculation.CoinAmount} DOGE",
-                Margin = $"{calculation.ActualMarginUSD:F2} USDT",
-                Leverage = "3x",
-                Error = result.ErrorMessage
-            });
-        }
-        catch (Exception ex)
-        {
-            testResults.Add(new { Step = "1️⃣ DOGE LONG AÇ", Status = "❌ HATA", Error = ex.Message });
-        }
-
-        await Task.Delay(1000); // İşlem yerleşmesi için bekle
-
-        // ================================================================
-        // AŞAMA 2: DOGE SHORT AÇ (2 USDT, 3x) - HEDGE TEST
-        // ================================================================
-        try
-        {
-            _logger.LogInformation("2️⃣ DOGE SHORT açılıyor (HEDGE)...");
-            
-            var calculation = await _okxService.CalculateOrderAsync("DOGE", 2, 3, "SHORT");
-            
-            var result = await _okxService.PlaceMarketOrderAsync("DOGE", "sell", "short", calculation.Contracts);
-            
-            testResults.Add(new
-            {
-                Step = "2️⃣ DOGE SHORT AÇ (HEDGE)",
-                Status = result.Success ? "✅ BAŞARILI" : "❌ BAŞARISIZ",
-                OrderId = result.OrderId,
-                Contracts = calculation.Contracts,
-                CoinAmount = $"{calculation.CoinAmount} DOGE",
-                Margin = $"{calculation.ActualMarginUSD:F2} USDT",
-                Leverage = "3x",
-                Error = result.ErrorMessage
-            });
-        }
-        catch (Exception ex)
-        {
-            testResults.Add(new { Step = "2️⃣ DOGE SHORT AÇ", Status = "❌ HATA", Error = ex.Message });
-        }
-
-        await Task.Delay(1000);
 
         // ================================================================
         // AŞAMA 3: ETH LONG AÇ (5 USDT, 5x)
@@ -1449,18 +1387,7 @@ public class TestController : ControllerBase
 
             // Step 5: İşlem Yap (eğer AI onayladıysa)
             if (decision.ShouldTrade)
-            {                if (decision.Action.Equals("CLOSE_LONG", StringComparison.OrdinalIgnoreCase))
-                {
-                    var hasLong = positions.Any(p =>
-                        p.Symbol.Equals(decision.Symbol, StringComparison.OrdinalIgnoreCase) &&
-                        p.Direction.Equals("Long", StringComparison.OrdinalIgnoreCase));
-
-                    if (!hasLong)
-                    {
-                        skipReason = $"LONG pozisyon yok: {decision.Symbol}";
-                    }
-                }
-
+            {
                 if (decision.Action == "LONG")
                 {
                     _logger.LogInformation("📈 LONG pozisyon açılıyor: {Symbol} ${Amount}",
@@ -1638,9 +1565,10 @@ public class TestController : ControllerBase
             referencePrice = 3000m;
         }
 
-        async Task<object> ProcessStageAsync(string stageName, string movementType, decimal valueUsdt, decimal amount)
+                async Task<object> ProcessStageAsync(string stageName, string movementType, decimal valueUsdt, decimal amount)
         {
             var userStats = await _okxService.GetAccountInfoAsync();
+            var positions = userStats.ActivePositions;
 
             var movement = new WhaleMovement
             {
@@ -1658,7 +1586,7 @@ public class TestController : ControllerBase
                 OurBalanceUSDT = userStats.TotalUsd,
                 WhaleBalanceUSDT = whaleTotalBalance,
                 NewMovement = movement,
-                OurPositions = userStats.ActivePositions.Select(p => new OurPosition
+                OurPositions = positions.Select(p => new OurPosition
                 {
                     Symbol = p.Symbol,
                     Direction = p.Direction,
@@ -1689,6 +1617,7 @@ public class TestController : ControllerBase
                 decision.Symbol,
                 decision.AmountUSDT,
                 decision.ShouldTrade);
+
             TradeSignal? signal = null;
             TradeResult? tradeResult = null;
             string? skipReason = null;
@@ -1748,7 +1677,72 @@ public class TestController : ControllerBase
                 skipReason = decision.Reasoning;
             }
 
-            results.Add(new
+            return new
+            {
+                Stage = stageName,
+                Timestamp = DateTime.Now.ToString("HH:mm:ss.fff"),
+                Context = new
+                {
+                    context.OurBalanceUSDT,
+                    context.WhaleBalanceUSDT,
+                    Positions = context.OurPositions.Select(p => new
+                    {
+                        p.Symbol,
+                        p.Direction,
+                        p.MarginUSDT,
+                        p.EntryPrice,
+                        p.UnrealizedPnL
+                    }),
+                    Movement = new
+                    {
+                        movement.Type,
+                        movement.Symbol,
+                        movement.Amount,
+                        movement.ValueUSDT,
+                        movement.Price,
+                        movement.TxHash
+                    }
+                },
+                AIDecision = new
+                {
+                    decision.Action,
+                    decision.Symbol,
+                    decision.AmountUSDT,
+                    decision.Leverage,
+                    decision.ConfidenceScore,
+                    decision.Reasoning,
+                    decision.ShouldTrade,
+                    decision.ParseSuccess,
+                    decision.ParseError,
+                    decision.RawResponse
+                },
+                Signal = signal == null
+                    ? null
+                    : new
+                    {
+                        signal.Action,
+                        signal.Symbol,
+                        signal.MarginAmountUSDT,
+                        signal.Leverage
+                    },
+                OkxResult = tradeResult == null
+                    ? null
+                    : new
+                    {
+                        tradeResult.Success,
+                        tradeResult.OrderId,
+                        tradeResult.Symbol,
+                        tradeResult.Side,
+                        tradeResult.Size,
+                        tradeResult.ErrorMessage
+                    },
+                SkipReason = skipReason
+            };
+        }
+        try
+        {
+            var accountInfo = await _okxService.GetAccountInfoAsync();
+            testResults.Add(new
             {
                 Stage = "0 - START",
                 Timestamp = DateTime.Now.ToString("HH:mm:ss.fff"),
@@ -1776,7 +1770,6 @@ public class TestController : ControllerBase
 
         testResults.Add(await ProcessStageAsync("3 - WHALE SELL REST", "SELL", whaleSellHalfUsd, whaleSellHalfAmount));
         await Task.Delay(1000);
-
         try
         {
             var finalAccount = await _okxService.GetAccountInfoAsync();
@@ -1837,19 +1830,24 @@ public class TestController : ControllerBase
         }
 
         var rawText = System.IO.File.ReadAllText(resolvedPath);
-        var blocks = ExtractEventBlocks(rawText).ToList();
+        var entries = ExtractEventEntries(rawText);
+        var orderedEntries = entries
+            .OrderBy(e => e.Timestamp ?? DateTime.MaxValue)
+            .ThenBy(e => e.Index)
+            .ToList();
 
         results.Add(new
         {
             Stage = "0 - LOADED",
             Timestamp = DateTime.Now.ToString("HH:mm:ss.fff"),
             File = resolvedPath,
-            TotalBlocks = blocks.Count
+            TotalBlocks = orderedEntries.Count,
+            Order = "oldest_to_newest"
         });
 
         var index = 0;
 
-        foreach (var block in blocks)
+        foreach (var entry in orderedEntries)
         {
             index++;
 
@@ -1859,7 +1857,7 @@ public class TestController : ControllerBase
             var movement = new WhaleMovement
             {
                 Type = "RAW",
-                RawText = block,
+                RawText = entry.RawText,
                 TxHash = $"0x_raw_{Guid.NewGuid():N}"[..12],
                 Timestamp = DateTime.UtcNow
             };
@@ -1882,7 +1880,7 @@ public class TestController : ControllerBase
                 }).ToList()
             };
 
-            _logger.LogInformation("Replay {Index}/{Total} - RAW EVENT:\n{Block}", index, blocks.Count, block);
+            _logger.LogInformation("Replay {Index}/{Total} - RAW EVENT:\n{Block}", index, orderedEntries.Count, entry.RawText);
 
             var decision = await _aiService.AnalyzeMovementAsync(context);
 
@@ -1956,7 +1954,7 @@ public class TestController : ControllerBase
             {
                 Index = index,
                 Timestamp = DateTime.Now.ToString("HH:mm:ss.fff"),
-                RawEvent = block,
+                RawEvent = entry.RawText,
                 AIDecision = new
                 {
                     decision.Action,
@@ -2005,39 +2003,98 @@ public class TestController : ControllerBase
         {
             Title = "WHALE HISTORY REPLAY",
             Status = "COMPLETED",
-            TotalBlocks = blocks.Count,
+            TotalBlocks = orderedEntries.Count,
             TotalDurationMs = Math.Round(totalTimeMs, 0),
             Results = results
         });
     }
 
-    private static IEnumerable<string> ExtractEventBlocks(string rawText)
+    private sealed class WhaleEventEntry
     {
+        public WhaleEventEntry(int index, string rawText, DateTime? timestamp)
+        {
+            Index = index;
+            RawText = rawText;
+            Timestamp = timestamp;
+        }
+
+        public int Index { get; }
+        public string RawText { get; }
+        public DateTime? Timestamp { get; }
+    }
+
+    private static List<WhaleEventEntry> ExtractEventEntries(string rawText)
+    {
+        var entries = new List<WhaleEventEntry>();
         if (string.IsNullOrWhiteSpace(rawText))
         {
-            yield break;
+            return entries;
         }
+
+        rawText = rawText.TrimStart('\ufeff');
 
         var blocks = Regex.Split(rawText, @"\r?\n\r?\n")
             .Select(b => b.Trim())
-            .Where(b => !string.IsNullOrWhiteSpace(b));
+            .Where(b => !string.IsNullOrWhiteSpace(b))
+            .ToList();
+
+        string? currentDate = null;
+        var index = 0;
 
         foreach (var block in blocks)
         {
             if (Regex.IsMatch(block, @"^[A-Za-z]+\s+\d{1,2},\s+\d{4}$"))
             {
-                continue; // tarih sat�r�
+                currentDate = block;
+                continue;
             }
 
             if (!Regex.IsMatch(block, @"\b(Trade|Deposit|Receive|Send|Approve|Execute|Mint)\b", RegexOptions.IgnoreCase))
             {
-                continue; // hareket de�il
+                continue;
             }
 
-            yield return block;
+            index++;
+            var raw = currentDate != null
+                ? $"{currentDate}\n\n{block}"
+                : block;
+
+            var timestamp = TryParseEventTimestamp(currentDate, block);
+            entries.Add(new WhaleEventEntry(index, raw, timestamp));
         }
+
+        return entries;
     }
-    private string ResolveHistoryFilePath(string file)
+
+    private static DateTime? TryParseEventTimestamp(string? dateLine, string block)
+    {
+        if (string.IsNullOrWhiteSpace(dateLine))
+        {
+            return null;
+        }
+
+        var match = Regex.Match(block, @"\b\d{1,2}:\d{2}\s+[AP]M\b");
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        var combined = $"{dateLine} {match.Value}";
+
+        if (DateTime.TryParseExact(combined, "MMMM d, yyyy h:mm tt", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
+        {
+            return parsed;
+        }
+
+        if (DateTime.TryParseExact(combined, "MMMM dd, yyyy h:mm tt", CultureInfo.InvariantCulture, DateTimeStyles.None, out parsed))
+        {
+            return parsed;
+        }
+
+        return null;
+    }
+
+private string ResolveHistoryFilePath(string file)
     {
         if (Path.IsPathRooted(file))
         {
@@ -2068,6 +2125,11 @@ public class AITestRequest
     public WhaleMovement? Movement { get; set; }
     public decimal? WhaleBalance { get; set; }
 }
+
+
+
+
+
 
 
 

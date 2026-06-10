@@ -1,6 +1,8 @@
 # Build outputs
 **/bin/
 **/obj/
+.venv/
+**/.venv/
 
 # Local secrets/config
 .env
@@ -8,3 +10,10 @@
 **/appsettings.Local.json
 data/okx_futures_symbols.json
 src/WhaleTracker.API/data/
+
+# Runtime/generated data
+data/benchmarks/
+data/zerion_*.json
+data/zerion_*.jsonl
+data/*watch*.json
+data/*watch*.jsonl
