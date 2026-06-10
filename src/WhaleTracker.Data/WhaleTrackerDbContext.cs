@@ -34,6 +34,10 @@ public class WhaleTrackerDbContext : DbContext
     /// </summary>
     public DbSet<ProcessedTransactionEntity> ProcessedTransactions => Set<ProcessedTransactionEntity>();
 
+    public DbSet<HistoricalScanEntity> HistoricalScans => Set<HistoricalScanEntity>();
+
+    public DbSet<InsiderCandidateEntity> InsiderCandidates => Set<InsiderCandidateEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -63,6 +67,23 @@ public class WhaleTrackerDbContext : DbContext
         modelBuilder.Entity<ProcessedTransactionEntity>(entity =>
         {
             entity.HasKey(e => e.TxHash);
+        });
+
+        modelBuilder.Entity<HistoricalScanEntity>(entity =>
+        {
+            entity.HasIndex(e => e.CreatedAt);
+            entity.HasIndex(e => e.Provider);
+            entity.HasMany(e => e.Candidates)
+                .WithOne(e => e.HistoricalScan)
+                .HasForeignKey(e => e.HistoricalScanId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<InsiderCandidateEntity>(entity =>
+        {
+            entity.HasIndex(e => e.WalletAddress);
+            entity.HasIndex(e => e.InsiderScore);
+            entity.HasIndex(e => e.EstimatedProfitUsd);
         });
     }
 }
