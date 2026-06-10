@@ -36,11 +36,13 @@ public class WhaleController : ControllerBase
     [HttpGet("portfolio")]
     public async Task<IActionResult> GetWhalePortfolio()
     {
-        // TODO: Balina portföyünü getir
-        // var portfolio = await _zerionService.GetWalletPortfolioAsync(_whaleAddress);
-        // return Ok(portfolio);
+        if (string.IsNullOrWhiteSpace(_whaleAddress))
+        {
+            return BadRequest(new { error = "Zerion:WhaleAddress is not configured." });
+        }
 
-        throw new NotImplementedException("GetWhalePortfolio endpoint'ini implement et!");
+        var portfolio = await _zerionService.GetWalletPortfolioAsync(_whaleAddress);
+        return Ok(portfolio);
     }
 
     /// <summary>
@@ -50,11 +52,13 @@ public class WhaleController : ControllerBase
     [HttpGet("transactions")]
     public async Task<IActionResult> GetWhaleTransactions([FromQuery] int limit = 20)
     {
-        // TODO: Balina işlemlerini getir
-        // var transactions = await _zerionService.GetRecentTransactionsAsync(_whaleAddress, limit);
-        // return Ok(transactions);
+        if (string.IsNullOrWhiteSpace(_whaleAddress))
+        {
+            return BadRequest(new { error = "Zerion:WhaleAddress is not configured." });
+        }
 
-        throw new NotImplementedException("GetWhaleTransactions endpoint'ini implement et!");
+        var transactions = await _zerionService.GetRecentTransactionsAsync(_whaleAddress, Math.Clamp(limit, 1, 100));
+        return Ok(transactions);
     }
 
     /// <summary>
@@ -64,11 +68,13 @@ public class WhaleController : ControllerBase
     [HttpPost("process")]
     public async Task<IActionResult> ProcessTransaction([FromBody] TransactionEvent transaction)
     {
-        // TODO: Manuel olarak bir işlemi işle (test için)
-        // var signal = await _whaleTrackerService.ProcessTransactionAsync(transaction);
-        // return Ok(signal);
+        if (transaction == null || string.IsNullOrWhiteSpace(transaction.TxHash))
+        {
+            return BadRequest(new { error = "Transaction with TxHash is required." });
+        }
 
-        throw new NotImplementedException("ProcessTransaction endpoint'ini implement et!");
+        var signal = await _whaleTrackerService.ProcessTransactionAsync(transaction);
+        return Ok(signal);
     }
 
     /// <summary>
@@ -78,10 +84,7 @@ public class WhaleController : ControllerBase
     [HttpPost("scan")]
     public async Task<IActionResult> TriggerScan()
     {
-        // TODO: Manuel tarama tetikle
-        // await _whaleTrackerService.ScanAndProcessAsync();
-        // return Ok(new { message = "Scan completed" });
-
-        throw new NotImplementedException("TriggerScan endpoint'ini implement et!");
+        await _whaleTrackerService.ScanAndProcessAsync();
+        return Ok(new { message = "Scan completed" });
     }
 }

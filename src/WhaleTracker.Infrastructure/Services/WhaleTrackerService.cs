@@ -18,24 +18,22 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
 {
     private readonly IZerionService _zerionService;
     private readonly IOkxService _okxService;
-    private readonly IDecisionEngine _decisionEngine;
+    private readonly IAIService _aiService;
     private readonly ITradeRepository _tradeRepository;
     private readonly ILogger<WhaleTrackerService> _logger;
     private readonly AppSettings _settings;
 
-    private string? _lastProcessedTxHash;
-
     public WhaleTrackerService(
         IZerionService zerionService,
         IOkxService okxService,
-        IDecisionEngine decisionEngine,
+        IAIService aiService,
         ITradeRepository tradeRepository,
         ILogger<WhaleTrackerService> logger,
         IOptions<AppSettings> settings)
     {
         _zerionService = zerionService;
         _okxService = okxService;
-        _decisionEngine = decisionEngine;
+        _aiService = aiService;
         _tradeRepository = tradeRepository;
         _logger = logger;
         _settings = settings.Value;
@@ -73,37 +71,33 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
     /// </summary>
     public async Task ScanAndProcessAsync()
     {
-        // ================================================================
-        // TODO: ANA İŞ AKIŞI BURADA
-        // ================================================================
-        // 
-        // 1. Zerion'dan son işlemleri çek
-        // var transactions = await _zerionService.GetRecentTransactionsAsync(
-        //     _settings.Zerion.WhaleAddress, 
-        //     limit: 10
-        // );
-        // 
-        // 2. Her işlem için:
-        // foreach (var tx in transactions)
-        // {
-        //     // Daha önce işlendi mi?
-        //     if (await _tradeRepository.IsTransactionProcessedAsync(tx.TxHash))
-        //         continue;
-        //
-        //     // İşle
-        //     var signal = await ProcessTransactionAsync(tx);
-        //
-        //     // İşlendi olarak işaretle
-        //     await _tradeRepository.MarkTransactionProcessedAsync(
-        //         tx.TxHash, 
-        //         signal.Decision == "TRADE"
-        //     );
-        // }
-        // ================================================================
+        if (string.IsNullOrWhiteSpace(_settings.Zerion.WhaleAddress))
+        {
+            _logger.LogWarning("Zerion:WhaleAddress boş. Tarama atlandı.");
+            return;
+        }
 
-        _logger.LogInformation("ScanAndProcessAsync çağrıldı");
+        var transactions = await _zerionService.GetRecentTransactionsAsync(
+            _settings.Zerion.WhaleAddress,
+            limit: 10);
 
-        throw new NotImplementedException("ScanAndProcessAsync metodunu implement et!");
+        foreach (var transaction in transactions.OrderBy(x => x.BlockTimestamp))
+        {
+            if (string.IsNullOrWhiteSpace(transaction.TxHash))
+            {
+                continue;
+            }
+
+            if (await _tradeRepository.IsTransactionProcessedAsync(transaction.TxHash))
+            {
+                continue;
+            }
+
+            var signal = await ProcessTransactionAsync(transaction);
+            await _tradeRepository.MarkTransactionProcessedAsync(
+                transaction.TxHash,
+                string.Equals(signal.Decision, "TRADE", StringComparison.OrdinalIgnoreCase));
+        }
     }
 
     /// <summary>
@@ -111,60 +105,144 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
     /// </summary>
     public async Task<TradeSignal> ProcessTransactionAsync(TransactionEvent transaction)
     {
-        // ================================================================
-        // TODO: TEK BİR İŞLEMİ İŞLE
-        // ================================================================
-        // 
-        // 1. Balina ve kullanıcı bilgilerini çek
-        // var whaleStats = await _zerionService.GetWalletPortfolioAsync(_settings.Zerion.WhaleAddress);
-        // var userStats = await _okxService.GetAccountInfoAsync();
-        // 
-        // 2. AI'dan karar al
-        // var signal = await _decisionEngine.AnalyzeAndDecideAsync(whaleStats, userStats, transaction);
-        // 
-        // 3. Eğer TRADE ise çalıştır
-        // TradeResult? result = null;
-        // if (signal.Decision == "TRADE")
-        // {
-        //     result = await _okxService.ExecuteTradeAsync(signal);
-        // }
-        // 
-        // 4. Veritabanına kaydet
-        // var logEntity = new TradeLogEntity
-        // {
-        //     WhaleTxHash = transaction.TxHash,
-        //     OkxOrderId = result?.OrderId,
-        //     Symbol = signal.Symbol,
-        //     Action = signal.Action,
-        //     Leverage = signal.Leverage,
-        //     MarginUsdt = signal.MarginAmountUSDT,
-        //     ExecutedPrice = result?.ExecutedPrice,
-        //     IsSuccess = result?.Success ?? false,
-        //     ErrorMessage = result?.ErrorMessage,
-        //     Confidence = signal.TradeConfidence,
-        //     AiReason = signal.Reason
-        // };
-        // await _tradeRepository.SaveTradeLogAsync(logEntity);
-        // 
-        // return signal;
-        // ================================================================
-
         _logger.LogInformation(
             "ProcessTransactionAsync çağrıldı: {TxHash}",
             transaction.TxHash);
 
-        throw new NotImplementedException("ProcessTransactionAsync metodunu implement et!");
+        var whaleAddress = _settings.Zerion.WhaleAddress;
+        var whaleStats = string.IsNullOrWhiteSpace(whaleAddress)
+            ? new WhaleStats()
+            : await _zerionService.GetWalletPortfolioAsync(whaleAddress);
+
+        var userStats = await _okxService.GetAccountInfoAsync();
+        var aiDecision = await _aiService.AnalyzeMovementAsync(BuildAiContext(whaleStats, userStats, transaction));
+        var signal = MapDecisionToSignal(aiDecision, transaction);
+
+        TradeResult? result = null;
+        if (string.Equals(signal.Decision, "TRADE", StringComparison.OrdinalIgnoreCase))
+        {
+            result = await _okxService.ExecuteTradeAsync(signal);
+        }
+
+        await _tradeRepository.SaveTradeLogAsync(new TradeLogEntity
+        {
+            WhaleTxHash = transaction.TxHash,
+            OkxOrderId = result?.OrderId,
+            Symbol = signal.Symbol,
+            Action = signal.Action,
+            Leverage = signal.Leverage,
+            MarginUsdt = signal.MarginAmountUSDT,
+            ExecutedPrice = result?.ExecutedPrice,
+            IsSuccess = result?.Success ?? signal.Decision == "IGNORE",
+            ErrorMessage = result?.ErrorMessage,
+            Confidence = signal.TradeConfidence,
+            AiReason = signal.Reason
+        });
+
+        return signal;
     }
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    public override Task StartAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("WhaleTracker başlatılıyor...");
-        return Task.CompletedTask;
+        return base.StartAsync(cancellationToken);
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public override Task StopAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("WhaleTracker durduruluyor...");
-        return Task.CompletedTask;
+        return base.StopAsync(cancellationToken);
+    }
+
+    private static AIContext BuildAiContext(WhaleStats whaleStats, UserStats userStats, TransactionEvent transaction)
+    {
+        return new AIContext
+        {
+            OurBalanceUSDT = userStats.TotalUsd,
+            WhaleBalanceUSDT = whaleStats.TotalUsd,
+            OurPositions = userStats.ActivePositions.Select(x => new OurPosition
+            {
+                Symbol = x.Symbol,
+                Direction = x.Direction,
+                MarginUSDT = x.MarginUsd,
+                EntryPrice = x.EntryPrice,
+                UnrealizedPnL = x.UnrealizedPnl,
+                Leverage = userStats.Leverage
+            }).ToList(),
+            NewMovement = new WhaleMovement
+            {
+                TxHash = transaction.TxHash,
+                Chain = transaction.Chain,
+                Type = NormalizeMovementType(transaction),
+                Symbol = transaction.NormalizedSymbol,
+                Amount = transaction.Amount,
+                ValueUSDT = transaction.UsdValue,
+                Timestamp = transaction.BlockTimestamp,
+                RawText = $"{transaction.Direction} {transaction.Amount} {transaction.TokenSymbol} (${transaction.UsdValue}) via {transaction.TransactionType}"
+            }
+        };
+    }
+
+    private static TradeSignal MapDecisionToSignal(AIDecision decision, TransactionEvent transaction)
+    {
+        var action = decision.Action.ToUpperInvariant() switch
+        {
+            "LONG" => TradeAction.OPEN_LONG,
+            "BUY" => TradeAction.OPEN_LONG,
+            "SELL" => TradeAction.CLOSE_LONG,
+            "SHORT" => TradeAction.CLOSE_LONG,
+            "CLOSE" => TradeAction.CLOSE_LONG,
+            "CLOSE_LONG" => TradeAction.CLOSE_LONG,
+            "OPEN_LONG" => TradeAction.OPEN_LONG,
+            _ => TradeAction.IGNORE
+        };
+
+        var shouldTrade = decision.ShouldTrade &&
+                          action != TradeAction.IGNORE &&
+                          decision.AmountUSDT > 0 &&
+                          !string.IsNullOrWhiteSpace(decision.Symbol);
+
+        return new TradeSignal
+        {
+            Decision = shouldTrade ? "TRADE" : "IGNORE",
+            Action = shouldTrade ? action : TradeAction.IGNORE,
+            Symbol = NormalizeSymbol(decision.Symbol, transaction.NormalizedSymbol),
+            MarginAmountUSDT = decision.AmountUSDT,
+            Leverage = decision.Leverage,
+            TradeConfidence = decision.ConfidenceScore,
+            Reason = string.IsNullOrWhiteSpace(decision.Reasoning)
+                ? decision.ParseError ?? "AI decision produced no reasoning."
+                : decision.Reasoning,
+            SourceTxHash = transaction.TxHash
+        };
+    }
+
+    private static string NormalizeMovementType(TransactionEvent transaction)
+    {
+        if (string.Equals(transaction.Direction, "Incoming", StringComparison.OrdinalIgnoreCase))
+        {
+            return "BUY";
+        }
+
+        if (string.Equals(transaction.Direction, "Outgoing", StringComparison.OrdinalIgnoreCase))
+        {
+            return "SELL";
+        }
+
+        return string.IsNullOrWhiteSpace(transaction.TransactionType)
+            ? "TRADE"
+            : transaction.TransactionType.ToUpperInvariant();
+    }
+
+    private static string NormalizeSymbol(string preferred, string fallback)
+    {
+        var symbol = string.IsNullOrWhiteSpace(preferred) ? fallback : preferred;
+        return symbol.ToUpperInvariant() switch
+        {
+            "WETH" => "ETH",
+            "WBTC" => "BTC",
+            "USDC" => "USDT",
+            _ => symbol.ToUpperInvariant()
+        };
     }
 }
