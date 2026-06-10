@@ -59,9 +59,23 @@
       <div class="col-12 col-lg-7">
         <div class="card panel-card h-100">
           <div class="card-body">
-            <h5 class="mb-3">System Health</h5>
+            <div class="d-flex align-items-center justify-content-between mb-3">
+              <h5 class="mb-0">Runtime Control</h5>
+              <button class="btn btn-outline-light btn-sm" id="refreshRuntime">Refresh</button>
+            </div>
             <div class="metric" id="adminStatus">--</div>
             <div class="subtle" id="adminHeartbeat">--</div>
+            <div class="row g-2 align-items-end mt-3">
+              <div class="col-12 col-md-5">
+                <label class="form-label">Polling Interval</label>
+                <input class="form-control" type="number" id="runtimeInterval" min="5" max="3600" value="30" />
+              </div>
+              <div class="col-12 col-md-7 d-flex gap-2">
+                <button class="btn btn-primary flex-fill" id="enableRuntime">Enable Auto</button>
+                <button class="btn btn-outline-light flex-fill" id="disableRuntime">Disable</button>
+              </div>
+            </div>
+            <div class="subtle mt-3" id="runtimeDetails">--</div>
           </div>
         </div>
       </div>

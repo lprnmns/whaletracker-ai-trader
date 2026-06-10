@@ -18,6 +18,11 @@ const aiBiasDirection = document.getElementById("aiBiasDirection");
 const aiBiasScore = document.getElementById("aiBiasScore");
 const aiBiasSummary = document.getElementById("aiBiasSummary");
 const aiMemoryRows = document.getElementById("aiMemoryRows");
+const refreshRuntimeBtn = document.getElementById("refreshRuntime");
+const enableRuntimeBtn = document.getElementById("enableRuntime");
+const disableRuntimeBtn = document.getElementById("disableRuntime");
+const runtimeIntervalInput = document.getElementById("runtimeInterval");
+const runtimeDetails = document.getElementById("runtimeDetails");
 
 async function fetchJson(url, options = {}) {
   const headers = options.body
@@ -94,13 +99,22 @@ function toIsoFromLocalInput(id) {
 
 async function loadStatus() {
   try {
-    const data = await fetchJson("/api/dashboard/status");
+    const [data, runtime] = await Promise.all([
+      fetchJson("/api/dashboard/status"),
+      fetchJson("/api/runtime-control"),
+    ]);
     clearAlert();
-    const active = data.program?.active;
-    adminStatus.textContent = active ? "Program Active" : "Program Passive";
-    adminHeartbeat.textContent = data.program?.lastHeartbeat
-      ? `Heartbeat: ${new Date(data.program.lastHeartbeat).toLocaleString()}`
-      : "Heartbeat: --";
+    adminStatus.textContent = runtime.autoTradingEnabled ? "Auto Trader Enabled" : "Auto Trader Disabled";
+    adminHeartbeat.textContent = runtime.lastWorkerHeartbeatAt
+      ? `Worker heartbeat: ${new Date(runtime.lastWorkerHeartbeatAt).toLocaleString()}`
+      : "Worker heartbeat: --";
+    runtimeIntervalInput.value = runtime.pollingIntervalSeconds || 30;
+    runtimeDetails.textContent = [
+      runtime.lastScanStartedAt ? `Last scan start: ${formatDate(runtime.lastScanStartedAt)}` : "Last scan start: --",
+      runtime.lastScanCompletedAt ? `Last scan done: ${formatDate(runtime.lastScanCompletedAt)}` : "Last scan done: --",
+      runtime.lastError ? `Error: ${runtime.lastError}` : "Error: --",
+      data.program?.active ? "Dashboard program: active" : "Dashboard program: passive",
+    ].join(" | ");
   } catch {
     alertBox.textContent = "Unable to load status. Check backend.";
     alertBox.classList.remove("d-none");
@@ -318,6 +332,23 @@ async function addManualWallet() {
   }
 }
 
+async function updateRuntime(enabled) {
+  const interval = Number(runtimeIntervalInput?.value || 30);
+  try {
+    await fetchJson("/api/runtime-control", {
+      method: "PATCH",
+      body: JSON.stringify({
+        autoTradingEnabled: enabled,
+        pollingIntervalSeconds: interval,
+      }),
+    });
+    showAlert(enabled ? "Auto trader enabled." : "Auto trader disabled.", false);
+    await loadStatus();
+  } catch (err) {
+    showAlert(`Runtime update failed: ${err.message}`);
+  }
+}
+
 logoutBtn?.addEventListener("click", async () => {
   await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
   window.location.href = "/login.html";
@@ -380,6 +411,9 @@ refreshScansBtn?.addEventListener("click", loadScans);
 refreshWalletsBtn?.addEventListener("click", loadTrackedWallets);
 addManualWalletBtn?.addEventListener("click", addManualWallet);
 refreshAiMemoryBtn?.addEventListener("click", loadAiMemory);
+refreshRuntimeBtn?.addEventListener("click", loadStatus);
+enableRuntimeBtn?.addEventListener("click", () => updateRuntime(true));
+disableRuntimeBtn?.addEventListener("click", () => updateRuntime(false));
 
 document.addEventListener("DOMContentLoaded", () => {
   loadStatus();

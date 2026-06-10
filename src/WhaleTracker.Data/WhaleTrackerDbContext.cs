@@ -44,6 +44,8 @@ public class WhaleTrackerDbContext : DbContext
 
     public DbSet<AiDecisionEventEntity> AiDecisionEvents => Set<AiDecisionEventEntity>();
 
+    public DbSet<RuntimeControlEntity> RuntimeControls => Set<RuntimeControlEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);

@@ -44,6 +44,7 @@ builder.Services.AddHttpClient<IWalletActivityService, AlchemyWalletActivityServ
 builder.Services.AddScoped<IWhaleTrackerService, WhaleTrackerService>();
 builder.Services.AddScoped<IInsiderDetectionService, InsiderDetectionService>();
 builder.Services.AddScoped<IAiBiasMemoryService, AiBiasMemoryService>();
+builder.Services.AddHostedService<AutoTraderWorker>();
 
 // ================================================================
 // AUTH (Cookie)
@@ -105,6 +106,7 @@ if (appSettings.Database.AutoEnsureCreated)
         db.Database.EnsureCreated();
         EnsureTrackedWalletSchema(db);
         EnsureAiMemorySchema(db);
+        EnsureRuntimeControlSchema(db);
         app.Logger.LogInformation("Database schema ensured.");
     }
     catch (Exception ex)
@@ -225,5 +227,27 @@ static void EnsureAiMemorySchema(WhaleTrackerDbContext db)
     db.Database.ExecuteSqlRaw("""
         CREATE INDEX IF NOT EXISTS ix_ai_decision_events_created_at
         ON ai_decision_events (created_at);
+        """);
+}
+
+static void EnsureRuntimeControlSchema(WhaleTrackerDbContext db)
+{
+    db.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS runtime_control (
+            id VARCHAR(60) PRIMARY KEY,
+            auto_trading_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            polling_interval_seconds INTEGER NOT NULL DEFAULT 30,
+            last_worker_heartbeat_at TIMESTAMPTZ NULL,
+            last_scan_started_at TIMESTAMPTZ NULL,
+            last_scan_completed_at TIMESTAMPTZ NULL,
+            last_error TEXT NOT NULL DEFAULT '',
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        INSERT INTO runtime_control (id, auto_trading_enabled, polling_interval_seconds)
+        VALUES ('global', FALSE, 30)
+        ON CONFLICT (id) DO NOTHING;
         """);
 }
