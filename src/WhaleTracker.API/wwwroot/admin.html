@@ -181,6 +181,45 @@
       </div>
     </section>
 
+    <section class="row g-3 mb-4">
+      <div class="col-12 col-lg-4">
+        <div class="card panel-card h-100">
+          <div class="card-body">
+            <div class="d-flex align-items-center justify-content-between mb-3">
+              <h5 class="mb-0">AI Bias</h5>
+              <button class="btn btn-outline-light btn-sm" id="refreshAiMemory">Refresh</button>
+            </div>
+            <div class="metric" id="aiBiasDirection">NEUTRAL</div>
+            <div class="subtle" id="aiBiasScore">Score: 0 / 100</div>
+            <div class="subtle mt-3" id="aiBiasSummary">No memory events recorded.</div>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-lg-8">
+        <div class="card panel-card h-100">
+          <div class="card-body">
+            <h5 class="mb-3">AI Memory Events</h5>
+            <div class="table-responsive table-scroll">
+              <table class="table table-dark table-borderless align-middle">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Wallet</th>
+                    <th>Move</th>
+                    <th>Action</th>
+                    <th>Delta</th>
+                  </tr>
+                </thead>
+                <tbody id="aiMemoryRows">
+                  <tr><td colspan="5" class="text-muted">No memory events loaded.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="card panel-card">
       <div class="card-body">
         <div class="d-flex align-items-center justify-content-between mb-3">

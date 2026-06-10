@@ -13,6 +13,11 @@ const runHistoricalScanBtn = document.getElementById("runHistoricalScan");
 const refreshScansBtn = document.getElementById("refreshScans");
 const refreshWalletsBtn = document.getElementById("refreshWallets");
 const addManualWalletBtn = document.getElementById("addManualWallet");
+const refreshAiMemoryBtn = document.getElementById("refreshAiMemory");
+const aiBiasDirection = document.getElementById("aiBiasDirection");
+const aiBiasScore = document.getElementById("aiBiasScore");
+const aiBiasSummary = document.getElementById("aiBiasSummary");
+const aiMemoryRows = document.getElementById("aiMemoryRows");
 
 async function fetchJson(url, options = {}) {
   const headers = options.body
@@ -214,6 +219,43 @@ async function loadTrackedWallets() {
   }
 }
 
+async function loadAiMemory() {
+  try {
+    const [state, events] = await Promise.all([
+      fetchJson("/api/ai-memory/state"),
+      fetchJson("/api/ai-memory/events?count=30"),
+    ]);
+
+    aiBiasDirection.textContent = state.direction || "NEUTRAL";
+    aiBiasScore.textContent = `Score: ${Number(state.biasScore || 0).toFixed(1)} / 100`;
+    aiBiasSummary.textContent = state.summary || "No memory events recorded.";
+
+    if (!Array.isArray(events) || !events.length) {
+      aiMemoryRows.innerHTML = `<tr><td colspan="5" class="text-muted">No AI memory events.</td></tr>`;
+      return;
+    }
+
+    aiMemoryRows.innerHTML = events
+      .map((event) => `
+        <tr>
+          <td>${formatDate(event.createdAt)}</td>
+          <td><span class="mono" title="${escapeHtml(event.walletAddress)}">${shortAddress(event.walletAddress)}</span></td>
+          <td>
+            <div>${escapeHtml(event.movementType || "--")} ${escapeHtml(event.symbol || "--")}</div>
+            <div class="subtle">${formatUsd(event.movementUsd)}</div>
+          </td>
+          <td>
+            <div>${escapeHtml(event.action || "--")}</div>
+            <div class="subtle">${escapeHtml(event.ignoredReason || "")}</div>
+          </td>
+          <td>${Number(event.biasDelta || 0).toFixed(1)}</td>
+        </tr>`)
+      .join("");
+  } catch {
+    aiMemoryRows.innerHTML = `<tr><td colspan="5" class="text-muted">Unable to load AI memory.</td></tr>`;
+  }
+}
+
 async function runHistoricalScan() {
   const request = {
     preCrashStartUtc: toIsoFromLocalInput("preCrashStart"),
@@ -337,13 +379,16 @@ runHistoricalScanBtn?.addEventListener("click", runHistoricalScan);
 refreshScansBtn?.addEventListener("click", loadScans);
 refreshWalletsBtn?.addEventListener("click", loadTrackedWallets);
 addManualWalletBtn?.addEventListener("click", addManualWallet);
+refreshAiMemoryBtn?.addEventListener("click", loadAiMemory);
 
 document.addEventListener("DOMContentLoaded", () => {
   loadStatus();
   loadLogs();
   loadScans();
   loadTrackedWallets();
+  loadAiMemory();
   setInterval(loadStatus, 15000);
   setInterval(loadLogs, 20000);
   setInterval(loadTrackedWallets, 30000);
+  setInterval(loadAiMemory, 30000);
 });

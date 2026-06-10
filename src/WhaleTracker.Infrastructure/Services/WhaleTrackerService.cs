@@ -23,6 +23,7 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
     private readonly IAIService _aiService;
     private readonly IWalletActivityService _walletActivityService;
     private readonly ITradeRepository _tradeRepository;
+    private readonly IAiBiasMemoryService _biasMemoryService;
     private readonly WhaleTrackerDbContext _db;
     private readonly ILogger<WhaleTrackerService> _logger;
     private readonly AppSettings _settings;
@@ -33,6 +34,7 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
         IAIService aiService,
         IWalletActivityService walletActivityService,
         ITradeRepository tradeRepository,
+        IAiBiasMemoryService biasMemoryService,
         WhaleTrackerDbContext db,
         ILogger<WhaleTrackerService> logger,
         IOptions<AppSettings> settings)
@@ -42,6 +44,7 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
         _aiService = aiService;
         _walletActivityService = walletActivityService;
         _tradeRepository = tradeRepository;
+        _biasMemoryService = biasMemoryService;
         _db = db;
         _logger = logger;
         _settings = settings.Value;
@@ -211,8 +214,10 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
         }
 
         var userStats = await _okxService.GetAccountInfoAsync();
-        var aiDecision = await _aiService.AnalyzeMovementAsync(BuildAiContext(whaleStats, userStats, transaction));
+        var promptMemory = await _biasMemoryService.BuildPromptMemoryAsync();
+        var aiDecision = await _aiService.AnalyzeMovementAsync(BuildAiContext(whaleStats, userStats, transaction, promptMemory));
         var signal = MapDecisionToSignal(aiDecision, transaction);
+        await _biasMemoryService.RecordDecisionAsync(transaction, aiDecision, whaleAddress, whaleStats.TotalUsd);
 
         TradeResult? result = null;
         if (string.Equals(signal.Decision, "TRADE", StringComparison.OrdinalIgnoreCase))
@@ -250,7 +255,11 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
         return base.StopAsync(cancellationToken);
     }
 
-    private static AIContext BuildAiContext(WhaleStats whaleStats, UserStats userStats, TransactionEvent transaction)
+    private static AIContext BuildAiContext(
+        WhaleStats whaleStats,
+        UserStats userStats,
+        TransactionEvent transaction,
+        string promptMemory)
     {
         return new AIContext
         {
@@ -274,7 +283,7 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
                 Amount = transaction.Amount,
                 ValueUSDT = transaction.UsdValue,
                 Timestamp = transaction.BlockTimestamp,
-                RawText = $"{transaction.Direction} {transaction.Amount} {transaction.TokenSymbol} (${transaction.UsdValue}) via {transaction.TransactionType}"
+                RawText = $"{promptMemory}\n\nEVENT: {transaction.Direction} {transaction.Amount} {transaction.TokenSymbol} (${transaction.UsdValue}) via {transaction.TransactionType}"
             }
         };
     }

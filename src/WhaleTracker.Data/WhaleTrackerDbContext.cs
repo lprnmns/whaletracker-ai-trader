@@ -40,6 +40,10 @@ public class WhaleTrackerDbContext : DbContext
 
     public DbSet<TrackedWalletEntity> TrackedWallets => Set<TrackedWalletEntity>();
 
+    public DbSet<AiBiasStateEntity> AiBiasStates => Set<AiBiasStateEntity>();
+
+    public DbSet<AiDecisionEventEntity> AiDecisionEvents => Set<AiDecisionEventEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -94,6 +98,14 @@ public class WhaleTrackerDbContext : DbContext
             entity.HasIndex(e => e.IsActive);
             entity.HasIndex(e => e.ConfidenceScore);
             entity.HasIndex(e => e.InsiderCandidateId);
+        });
+
+        modelBuilder.Entity<AiDecisionEventEntity>(entity =>
+        {
+            entity.HasIndex(e => e.TxHash);
+            entity.HasIndex(e => e.WalletAddress);
+            entity.HasIndex(e => e.CreatedAt);
+            entity.HasIndex(e => e.Symbol);
         });
     }
 }
