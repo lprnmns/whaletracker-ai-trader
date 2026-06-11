@@ -13,6 +13,7 @@
 .universe-stage {
   min-width: 0;
   position: relative;
+  overflow: hidden;
   border-right: 1px solid rgba(148, 163, 184, 0.18);
 }
 
@@ -149,6 +150,8 @@
 }
 
 .side-panel {
+  position: relative;
+  z-index: 20;
   height: 100vh;
   display: flex;
   flex-direction: column;
