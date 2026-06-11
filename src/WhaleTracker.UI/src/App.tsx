@@ -161,6 +161,70 @@ function parsePayload(event?: LiveEvent) {
   }
 }
 
+function makeCanvasSprite(
+  width: number,
+  height: number,
+  draw: (context: CanvasRenderingContext2D) => void,
+  scale: [number, number],
+) {
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d')
+  if (!context) return new THREE.Sprite()
+
+  context.clearRect(0, 0, width, height)
+  draw(context)
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.needsUpdate = true
+  texture.colorSpace = THREE.SRGBColorSpace
+
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+  }))
+  sprite.scale.set(scale[0], scale[1], 1)
+  sprite.renderOrder = 30
+  return sprite
+}
+
+function makeOkxBillboard(totalUsd?: number) {
+  return makeCanvasSprite(640, 300, (context) => {
+    context.fillStyle = '#ffffff'
+
+    const scale = 0.62
+    const offsetX = 88
+    const offsetY = 50
+    const rect = (x: number, y: number, width: number, height: number) => {
+      context.fillRect(offsetX + (x - 166) * scale, offsetY + (y - 428) * scale, width * scale, height * scale)
+    }
+
+    rect(166, 428, 224, 224)
+    context.save()
+    context.globalCompositeOperation = 'destination-out'
+    rect(241, 503, 75, 75)
+    context.restore()
+
+    rect(428, 428, 75, 224)
+    rect(503, 503, 75, 75)
+    rect(577, 428, 75, 75)
+    rect(577, 577, 75, 75)
+    rect(689, 428, 75, 75)
+    rect(689, 577, 75, 75)
+    rect(764, 503, 75, 75)
+    rect(838, 428, 75, 75)
+    rect(838, 577, 75, 75)
+
+    context.fillStyle = '#fed7aa'
+    context.font = '800 42px Arial, Helvetica, sans-serif'
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    context.fillText(formatUsd(totalUsd), 320, 235)
+  }, [30, 14])
+}
+
 function AiCoreOrb({ bias }: { bias: string }) {
   const mesh = useRef<THREE.Mesh>(null)
   const color = bias === 'BULLISH' ? '#22c55e' : bias === 'BEARISH' ? '#ef4444' : '#67e8f9'
@@ -180,12 +244,16 @@ function AiCoreOrb({ bias }: { bias: string }) {
       <ambientLight intensity={0.35} />
       <pointLight position={[4, 3, 5]} intensity={2.3} color={color} />
       <mesh ref={mesh}>
-        <icosahedronGeometry args={[1.25, 5]} />
-        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.85} roughness={0.28} metalness={0.18} />
+        <dodecahedronGeometry args={[1.22, 0]} />
+        <meshStandardMaterial color="#07111f" emissive={color} emissiveIntensity={0.62} roughness={0.18} metalness={0.74} />
       </mesh>
-      <mesh>
-        <sphereGeometry args={[1.72, 48, 48]} />
-        <meshBasicMaterial color={color} transparent opacity={0.08} wireframe />
+      <mesh rotation={[0.62, 0.12, 0.8]}>
+        <torusGeometry args={[1.72, 0.018, 8, 96]} />
+        <meshBasicMaterial color={color} transparent opacity={0.72} />
+      </mesh>
+      <mesh rotation={[1.35, 0.7, 0.15]}>
+        <torusGeometry args={[1.38, 0.014, 8, 96]} />
+        <meshBasicMaterial color="#e0f2fe" transparent opacity={0.46} />
       </mesh>
       <Text
         position={[0, 0.02, 1.35]}
@@ -360,30 +428,63 @@ function App() {
 
     if (node.kind === 'ai') {
       const coreMaterial = new THREE.MeshStandardMaterial({
-        color: node.color,
+        color: '#07111f',
         emissive: node.color,
-        emissiveIntensity: 0.9,
-        roughness: 0.22,
-        metalness: 0.35,
+        emissiveIntensity: 0.54,
+        roughness: 0.16,
+        metalness: 0.78,
       })
-      const core = new THREE.Mesh(new THREE.IcosahedronGeometry(4.2, 3), coreMaterial)
+      const coreGeometry = new THREE.DodecahedronGeometry(4.9, 0)
+      const core = new THREE.Mesh(coreGeometry, coreMaterial)
+      core.rotation.set(0.2, 0.55, -0.12)
       group.add(core)
+
+      const wire = new THREE.Mesh(
+        coreGeometry,
+        new THREE.MeshBasicMaterial({
+          color: node.color,
+          wireframe: true,
+          transparent: true,
+          opacity: 0.68,
+        }),
+      )
+      wire.rotation.copy(core.rotation)
+      group.add(wire)
 
       const ringMaterial = new THREE.MeshBasicMaterial({
         color: node.color,
         transparent: true,
-        opacity: 0.42,
+        opacity: 0.62,
       })
-      const ringA = new THREE.Mesh(new THREE.TorusGeometry(6.1, 0.07, 12, 96), ringMaterial)
-      const ringB = new THREE.Mesh(new THREE.TorusGeometry(7.2, 0.045, 12, 96), ringMaterial)
+      const ringA = new THREE.Mesh(new THREE.TorusGeometry(7.0, 0.06, 10, 96), ringMaterial)
+      const ringB = new THREE.Mesh(new THREE.TorusGeometry(5.8, 0.04, 10, 96), ringMaterial)
+      const ringC = new THREE.Mesh(new THREE.TorusGeometry(8.2, 0.025, 10, 96), new THREE.MeshBasicMaterial({
+        color: '#e0f2fe',
+        transparent: true,
+        opacity: 0.34,
+      }))
       ringA.rotation.x = Math.PI / 2.6
       ringB.rotation.y = Math.PI / 2.8
-      group.add(ringA, ringB)
+      ringC.rotation.set(Math.PI / 2.2, 0.45, 0.85)
+      group.add(ringA, ringB, ringC)
+
+      const satelliteGeometry = new THREE.OctahedronGeometry(0.58, 0)
+      const satelliteMaterial = new THREE.MeshBasicMaterial({ color: '#ecfeff', transparent: true, opacity: 0.86 })
+      ;[
+        [-6.9, 1.1, 0.3],
+        [5.9, -1.4, 0.8],
+        [1.3, 6.4, -0.2],
+        [-1.6, -6.1, 0.5],
+      ].forEach(([x, y, z]) => {
+        const satellite = new THREE.Mesh(satelliteGeometry, satelliteMaterial)
+        satellite.position.set(x, y, z)
+        group.add(satellite)
+      })
 
       const mark = new SpriteText('AI')
       mark.color = '#ecfeff'
-      mark.textHeight = 4.4
-      mark.position.set(0, -8.2, 0)
+      mark.textHeight = 3.4
+      mark.position.set(0, -10.4, 0)
       mark.material.depthTest = false
       mark.renderOrder = 20
       group.add(mark)
@@ -399,50 +500,7 @@ function App() {
     }
 
     if (node.kind === 'okx') {
-      const blockMaterial = new THREE.MeshStandardMaterial({
-        color: '#f8fafc',
-        emissive: '#fb923c',
-        emissiveIntensity: 0.12,
-        roughness: 0.32,
-        metalness: 0.18,
-      })
-      const blockGeometry = new THREE.BoxGeometry(2.85, 2.85, 2.85)
-      const positions = [
-        [-2.85, 1.7, 0],
-        [0.38, 1.7, 0],
-        [-2.85, -1.5, 0],
-        [0.38, -1.5, 0],
-      ] as const
-
-      positions.forEach(([x, y, z]) => {
-        const cube = new THREE.Mesh(blockGeometry, blockMaterial)
-        cube.position.set(x, y, z)
-        cube.rotation.set(0.22, 0.28, 0.08)
-        group.add(cube)
-      })
-
-      const backing = new THREE.Mesh(
-        new THREE.BoxGeometry(10.6, 7.2, 0.18),
-        new THREE.MeshBasicMaterial({ color: '#020617', transparent: true, opacity: 0.68 }),
-      )
-      backing.position.set(-1.2, 0.08, -1.6)
-      group.add(backing)
-
-      const mark = new SpriteText('OKX')
-      mark.color = '#ffffff'
-      mark.textHeight = 4.2
-      mark.position.set(-1.2, -7.35, 0.45)
-      mark.material.depthTest = false
-      mark.renderOrder = 20
-      group.add(mark)
-
-      const label = new SpriteText(formatUsd(operations?.okx?.totalUsd))
-      label.color = '#fed7aa'
-      label.textHeight = 2.45
-      label.position.set(-1.2, -10.35, 0.45)
-      label.material.depthTest = false
-      label.renderOrder = 20
-      group.add(label)
+      group.add(makeOkxBillboard(operations?.okx?.totalUsd))
       return group
     }
 
