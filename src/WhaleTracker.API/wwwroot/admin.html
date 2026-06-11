@@ -87,6 +87,45 @@
     <section class="card panel-card mb-4">
       <div class="card-body">
         <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+          <h5 class="mb-0">Manual Whale Event</h5>
+          <span class="tag">AI -> OKX pipeline</span>
+        </div>
+        <div class="row g-2 align-items-end">
+          <div class="col-12 col-md-2">
+            <label class="form-label">Type</label>
+            <select class="form-control" id="manualEventType">
+              <option value="BUY">BUY</option>
+              <option value="SELL">SELL</option>
+              <option value="manual">manual</option>
+            </select>
+          </div>
+          <div class="col-12 col-md-2">
+            <label class="form-label">Symbol</label>
+            <input class="form-control" type="text" id="manualEventSymbol" value="ETH" />
+          </div>
+          <div class="col-12 col-md-2">
+            <label class="form-label">Amount</label>
+            <input class="form-control" type="number" id="manualEventAmount" value="0.01" min="0" step="0.0001" />
+          </div>
+          <div class="col-12 col-md-2">
+            <label class="form-label">USD Value</label>
+            <input class="form-control" type="number" id="manualEventUsd" value="1000" min="0" step="1" />
+          </div>
+          <div class="col-12 col-md-2">
+            <label class="form-label">Tx Hash</label>
+            <input class="form-control" type="text" id="manualEventTx" placeholder="optional" />
+          </div>
+          <div class="col-12 col-md-2">
+            <button class="btn btn-primary w-100" id="processManualEvent">Process</button>
+          </div>
+        </div>
+        <div class="subtle mt-3" id="manualEventResult">--</div>
+      </div>
+    </section>
+
+    <section class="card panel-card mb-4">
+      <div class="card-body">
+        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
           <h5 class="mb-0">Historical Insider Scan</h5>
           <span class="tag">Etherscan + Uniswap V3</span>
         </div>

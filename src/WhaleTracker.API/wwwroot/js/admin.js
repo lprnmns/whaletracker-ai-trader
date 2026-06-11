@@ -31,6 +31,8 @@ const okxPositionSummary = document.getElementById("okxPositionSummary");
 const okxPositionRows = document.getElementById("okxPositionRows");
 const executionRows = document.getElementById("executionRows");
 const operationsCheckedAt = document.getElementById("operationsCheckedAt");
+const processManualEventBtn = document.getElementById("processManualEvent");
+const manualEventResult = document.getElementById("manualEventResult");
 
 async function fetchJson(url, options = {}) {
   const headers = options.body
@@ -432,6 +434,42 @@ async function scanNow() {
   }
 }
 
+async function processManualEvent() {
+  const payload = {
+    type: document.getElementById("manualEventType")?.value || "BUY",
+    symbol: document.getElementById("manualEventSymbol")?.value || "ETH",
+    amount: Number(document.getElementById("manualEventAmount")?.value || 0),
+    usdValue: Number(document.getElementById("manualEventUsd")?.value || 0),
+    txHash: document.getElementById("manualEventTx")?.value || "",
+    chain: "ethereum",
+  };
+
+  processManualEventBtn.disabled = true;
+  processManualEventBtn.textContent = "Processing...";
+  manualEventResult.textContent = "Processing manual event...";
+
+  try {
+    const result = await fetchJson("/api/manual-events/process", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    manualEventResult.textContent = `${result.signal?.decision || "--"} ${result.signal?.action || "--"} ${result.signal?.symbol || "--"} ${formatUsd(result.signal?.marginAmountUSDT || 0)}`;
+    showAlert("Manual event processed.", false);
+    await Promise.all([
+      loadOperations(),
+      loadAiMemory(),
+      loadStatus(),
+    ]);
+  } catch (err) {
+    manualEventResult.textContent = err.message;
+    showAlert(`Manual event failed: ${err.message}`);
+  } finally {
+    processManualEventBtn.disabled = false;
+    processManualEventBtn.textContent = "Process";
+  }
+}
+
 logoutBtn?.addEventListener("click", async () => {
   await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
   window.location.href = "/login.html";
@@ -499,6 +537,7 @@ enableRuntimeBtn?.addEventListener("click", () => updateRuntime(true));
 disableRuntimeBtn?.addEventListener("click", () => updateRuntime(false));
 scanNowBtn?.addEventListener("click", scanNow);
 refreshOperationsBtn?.addEventListener("click", loadOperations);
+processManualEventBtn?.addEventListener("click", processManualEvent);
 
 document.addEventListener("DOMContentLoaded", () => {
   loadStatus();
