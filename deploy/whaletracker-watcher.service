@@ -1,0 +1,13 @@
+[Unit]
+Description=WhaleTracker Zerion Watcher
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/whaletracker/WhaleTracker
+EnvironmentFile=/etc/whaletracker.env
+ExecStart=/usr/bin/pwsh -ExecutionPolicy Bypass -File /opt/whaletracker/WhaleTracker/scripts/zerion-watch.ps1 -Address $WATCH_ADDRESS -StartFromLatest -OnlyNonTrash -OperationTypes trade -SendToAi -IncludePositions -Execute
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

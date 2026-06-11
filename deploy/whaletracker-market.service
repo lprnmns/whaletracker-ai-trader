@@ -1,0 +1,12 @@
+[Unit]
+Description=WhaleTracker Market Comparison Service
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/whaletracker/WhaleTracker
+ExecStart=/opt/whaletracker/WhaleTracker/.venv/bin/python scripts/market_comparison_service.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=WhaleTracker API
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/whaletracker/WhaleTracker
+ExecStart=/usr/bin/dotnet run --project src/WhaleTracker.API --urls http://127.0.0.1:5090
+Restart=always
+RestartSec=5
+Environment=ASPNETCORE_ENVIRONMENT=Production
+
+[Install]
+WantedBy=multi-user.target
