@@ -300,7 +300,7 @@ function App() {
   const [chatQuestion, setChatQuestion] = useState('')
   const [chatLines, setChatLines] = useState<ChatLine[]>([])
   const [isChatThinking, setIsChatThinking] = useState(false)
-  const [eventPulseNow, setEventPulseNow] = useState(() => Date.now())
+  const [eventPulseRevision, setEventPulseRevision] = useState(0)
   const [scanForm, setScanForm] = useState({
     preCrashStartUtc: '',
     preCrashEndUtc: '',
@@ -346,9 +346,20 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const interval = window.setInterval(() => setEventPulseNow(Date.now()), 1000)
-    return () => window.clearInterval(interval)
-  }, [])
+    const now = Date.now()
+    const nextExpiry = events
+      .map((event) => new Date(event.createdAt).getTime() + 12_000)
+      .filter((expiresAt) => expiresAt > now)
+      .sort((a, b) => a - b)[0]
+
+    if (!nextExpiry) return
+
+    const timeout = window.setTimeout(
+      () => setEventPulseRevision((revision) => revision + 1),
+      Math.max(0, nextExpiry - now + 50),
+    )
+    return () => window.clearTimeout(timeout)
+  }, [events, eventPulseRevision])
 
   const loadMissionState = useCallback(async () => {
     try {
@@ -359,11 +370,11 @@ function App() {
         fetchJson<OperationsSnapshot>('/api/operations/snapshot'),
         fetchJson<HistoricalScan[]>('/api/historical-scans?count=10'),
       ])
-      setWallets(walletList)
-      setEvents(eventList)
+      setWallets((current) => JSON.stringify(current) === JSON.stringify(walletList) ? current : walletList)
+      setEvents((current) => JSON.stringify(current) === JSON.stringify(eventList) ? current : eventList)
       setAiState(state)
       setOperations(ops)
-      setScans(scanList)
+      setScans((current) => JSON.stringify(current) === JSON.stringify(scanList) ? current : scanList)
       setAlert('')
     } catch (error) {
       setAlert(error instanceof Error ? error.message : 'Mission state unavailable')
@@ -450,7 +461,7 @@ function App() {
     })
 
     events.slice(0, 40).forEach((event) => {
-      const isFreshEvent = eventPulseNow - new Date(event.createdAt).getTime() <= 12_000
+      const isFreshEvent = Date.now() - new Date(event.createdAt).getTime() <= 12_000
       const eventId = `event:${event.id}`
       nodes.set(eventId, {
         id: eventId,
@@ -472,7 +483,7 @@ function App() {
     })
 
     return { nodes: Array.from(nodes.values()), links }
-  }, [aiState.direction, eventPulseNow, events, operations?.okx?.totalUsd, wallets])
+  }, [aiState.direction, eventPulseRevision, events, operations?.okx?.totalUsd, wallets])
 
   const nodeThreeObject = useCallback((node: GraphNode) => {
     const group = new THREE.Group()
