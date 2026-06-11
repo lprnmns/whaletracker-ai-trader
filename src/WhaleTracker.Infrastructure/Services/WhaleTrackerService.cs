@@ -19,6 +19,11 @@ namespace WhaleTracker.Infrastructure.Services;
 /// </summary>
 public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
 {
+    private static readonly HashSet<string> StableSymbols = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "USDT", "USDC", "DAI", "USDE", "SUSDE", "FDUSD", "TUSD", "PYUSD"
+    };
+
     private readonly IZerionService _zerionService;
     private readonly IOkxService _okxService;
     private readonly IAIService _aiService;
@@ -248,6 +253,53 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
         _logger.LogInformation(
             "ProcessTransactionAsync çağrıldı: {TxHash}",
             transaction.TxHash);
+
+        if (StableSymbols.Contains(transaction.TokenSymbol) ||
+            StableSymbols.Contains(transaction.NormalizedSymbol))
+        {
+            var stableSignal = new TradeSignal
+            {
+                Decision = "IGNORE",
+                Action = TradeAction.IGNORE,
+                Symbol = NormalizeSymbol(transaction.NormalizedSymbol, transaction.TokenSymbol),
+                MarginAmountUSDT = 0,
+                Leverage = 1,
+                TradeConfidence = 100,
+                Reason = "Stablecoin hareketi; piyasa yönü veya futures işlemi oluşturmaz",
+                SourceTxHash = transaction.TxHash
+            };
+
+            await _liveEvents.PublishAsync(
+                LiveEventTypes.TradeSkipped,
+                $"Trade skipped: {stableSignal.Reason}",
+                whaleAddress,
+                transaction.TxHash,
+                stableSignal.Symbol,
+                transaction.UsdValue,
+                new
+                {
+                    stableSignal.Decision,
+                    stableSignal.Action,
+                    stableSignal.Reason,
+                    transaction.TokenSymbol,
+                    transaction.NormalizedSymbol,
+                    transaction.TransactionType
+                });
+
+            await _tradeRepository.SaveTradeLogAsync(new TradeLogEntity
+            {
+                WhaleTxHash = transaction.TxHash,
+                Symbol = stableSignal.Symbol,
+                Action = stableSignal.Action,
+                Leverage = stableSignal.Leverage,
+                MarginUsdt = 0,
+                IsSuccess = true,
+                Confidence = stableSignal.TradeConfidence,
+                AiReason = stableSignal.Reason
+            });
+
+            return stableSignal;
+        }
 
         var whaleStats = new WhaleStats();
         if (!string.IsNullOrWhiteSpace(whaleAddress))
