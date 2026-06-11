@@ -301,11 +301,12 @@ pre {
 
 .scan-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
 label {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -314,6 +315,8 @@ label {
 }
 
 input {
+  width: 100%;
+  box-sizing: border-box;
   min-width: 0;
   border: 1px solid rgba(148, 163, 184, 0.24);
   border-radius: 8px;
@@ -350,12 +353,50 @@ input {
   display: block;
 }
 
+.candidate-row small {
+  display: block;
+  margin-top: 5px;
+  color: #7f93ad;
+  line-height: 1.35;
+}
+
 .candidate-row button {
   width: 34px;
   height: 34px;
   border-radius: 999px;
   display: grid;
   place-items: center;
+}
+
+.wallet-seed-field {
+  display: grid;
+  gap: 7px;
+  color: #8fa4be;
+  font-size: 12px;
+}
+
+.wallet-seed-field textarea {
+  min-height: 76px;
+  resize: vertical;
+  border: 1px solid #263850;
+  border-radius: 6px;
+  background: #060d1c;
+  color: #dbeafe;
+  padding: 9px 10px;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.secondary-action {
+  width: 100%;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid #31506d;
+  border-radius: 6px;
+  background: #0a1b2e;
+  color: #bae6fd;
 }
 
 .chat-panel {

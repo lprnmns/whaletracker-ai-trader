@@ -72,22 +72,33 @@ type OperationsSnapshot = {
   }>
 }
 
-type HistoricalScan = {
+type TraderScan = {
   id: number
+  startUtc: string
+  endUtc: string
+  minimumStartingValueUsd: number
+  requestedTop: number
+  evaluatedWalletCount: number
+  qualifiedWalletCount: number
   createdAt: string
-  candidateCount: number
-  scannedSwapCount: number
 }
 
-type Candidate = {
+type TraderCandidate = {
   id: number
+  traderScanId: number
   walletAddress: string
-  assetSymbol: string
-  estimatedProfitUsd: number
-  insiderScore: number
-  timingScore: number
-  sizeScore: number
-  profitScore: number
+  startingValueUsd: number
+  endingValueUsd: number
+  receivedExternalUsd: number
+  sentExternalUsd: number
+  totalFeesUsd: number
+  adjustedProfitUsd: number
+  adjustedReturnPercent: number
+  realizedGainUsd: number
+  score: number
+  startPointUtc: string
+  endPointUtc: string
+  chartPeriod: string
 }
 
 type GraphNode = {
@@ -342,8 +353,9 @@ function App() {
   const [events, setEvents] = useState<LiveEvent[]>([])
   const [aiState, setAiState] = useState<AiState>({ biasScore: 0, direction: 'NEUTRAL', summary: '', eventCount: 0 })
   const [operations, setOperations] = useState<OperationsSnapshot | null>(null)
-  const [scans, setScans] = useState<HistoricalScan[]>([])
-  const [candidates, setCandidates] = useState<Candidate[]>([])
+  const [traderScans, setTraderScans] = useState<TraderScan[]>([])
+  const [traderCandidates, setTraderCandidates] = useState<TraderCandidate[]>([])
+  const [isTraderScanRunning, setIsTraderScanRunning] = useState(false)
   const [selected, setSelected] = useState<GraphNode | null>(null)
   const [activeTab, setActiveTab] = useState<Tab>('events')
   const [connectionState, setConnectionState] = useState('connecting')
@@ -352,12 +364,12 @@ function App() {
   const [chatLines, setChatLines] = useState<ChatLine[]>([])
   const [isChatThinking, setIsChatThinking] = useState(false)
   const [eventPulseRevision, setEventPulseRevision] = useState(0)
-  const [scanForm, setScanForm] = useState({
-    preCrashStartUtc: '',
-    preCrashEndUtc: '',
-    dipBuyStartUtc: '',
-    dipBuyEndUtc: '',
-    minimumProfitUsd: 1000,
+  const [traderForm, setTraderForm] = useState({
+    startUtc: '',
+    endUtc: '',
+    minimumStartingValueUsd: 100000,
+    top: 10,
+    candidateWallets: '',
   })
 
   useEffect(() => {
@@ -434,18 +446,18 @@ function App() {
 
   const loadMissionState = useCallback(async () => {
     try {
-      const [walletList, eventList, state, ops, scanList] = await Promise.all([
+      const [walletList, eventList, state, ops, traderScanList] = await Promise.all([
         fetchJson<Wallet[]>('/api/tracked-wallets?includeInactive=true'),
         fetchJson<LiveEvent[]>('/api/live-events?count=120'),
         fetchJson<AiState>('/api/ai-memory/state'),
         fetchJson<OperationsSnapshot>('/api/operations/snapshot'),
-        fetchJson<HistoricalScan[]>('/api/historical-scans?count=10'),
+        fetchJson<TraderScan[]>('/api/trader-finder/scans?count=10'),
       ])
       setWallets((current) => JSON.stringify(current) === JSON.stringify(walletList) ? current : walletList)
       setEvents((current) => JSON.stringify(current) === JSON.stringify(eventList) ? current : eventList)
       setAiState(state)
       setOperations(ops)
-      setScans((current) => JSON.stringify(current) === JSON.stringify(scanList) ? current : scanList)
+      setTraderScans((current) => JSON.stringify(current) === JSON.stringify(traderScanList) ? current : traderScanList)
       setAlert('')
     } catch (error) {
       setAlert(error instanceof Error ? error.message : 'Mission state unavailable')
@@ -740,40 +752,53 @@ function App() {
     }
   }, [])
 
-  const runScan = async () => {
+  const runTraderScan = async () => {
+    if (!traderForm.startUtc || !traderForm.endUtc || isTraderScanRunning) return
+    setIsTraderScanRunning(true)
     try {
-      const result = await fetchJson<{ scanId: number }>('/api/historical-scans/uniswap-v3', {
+      const candidateWallets = traderForm.candidateWallets
+        .split(/[\s,;]+/)
+        .map((value) => value.trim())
+        .filter(Boolean)
+      const result = await fetchJson<{
+        scanId: number
+        candidates: TraderCandidate[]
+        failures: Array<{ walletAddress: string; error: string }>
+      }>('/api/trader-finder/scan', {
         method: 'POST',
         body: JSON.stringify({
-          ...scanForm,
-          preCrashStartUtc: new Date(scanForm.preCrashStartUtc).toISOString(),
-          preCrashEndUtc: new Date(scanForm.preCrashEndUtc).toISOString(),
-          dipBuyStartUtc: new Date(scanForm.dipBuyStartUtc).toISOString(),
-          dipBuyEndUtc: new Date(scanForm.dipBuyEndUtc).toISOString(),
+          startUtc: new Date(traderForm.startUtc).toISOString(),
+          endUtc: new Date(traderForm.endUtc).toISOString(),
+          minimumStartingValueUsd: traderForm.minimumStartingValueUsd,
+          top: traderForm.top,
+          includeTrackedWallets: true,
+          candidateWallets,
         }),
       })
+      setTraderCandidates(result.candidates)
       await loadMissionState()
-      await loadCandidates(result.scanId)
-      setActiveTab('insider')
+      setAlert(result.failures.length > 0
+        ? `${result.failures.length} wallet provider rate limit veya veri eksigi nedeniyle analiz edilemedi.`
+        : '')
     } catch (error) {
-      setAlert(error instanceof Error ? error.message : 'Historical scan failed')
+      setAlert(error instanceof Error ? error.message : 'Trader scan failed')
+    } finally {
+      setIsTraderScanRunning(false)
     }
   }
 
-  const loadCandidates = async (scanId: number) => {
-    const rows = await fetchJson<Candidate[]>(`/api/historical-scans/${scanId}/candidates`)
-    setCandidates(rows)
+  const loadTraderCandidates = async (scanId: number) => {
+    const rows = await fetchJson<TraderCandidate[]>(`/api/trader-finder/scans/${scanId}/candidates`)
+    setTraderCandidates(rows)
   }
 
-  const promoteCandidate = async (candidate: Candidate) => {
-    await fetchJson(`/api/tracked-wallets/from-candidate/${candidate.id}`, {
-      method: 'POST',
-      body: JSON.stringify({
-        label: `insider-${candidate.assetSymbol}-${candidate.id}`,
-        isActive: true,
-        notes: 'Added from Universe Insider Lab.',
-      }),
-    })
+  const trackTraderCandidate = async (candidate: TraderCandidate) => {
+    await fetchJson(`/api/trader-finder/candidates/${candidate.id}/track`, { method: 'POST' })
+    await loadMissionState()
+  }
+
+  const trackTopTraders = async (scanId: number) => {
+    await fetchJson(`/api/trader-finder/scans/${scanId}/track-top?limit=10`, { method: 'POST' })
     await loadMissionState()
   }
 
@@ -917,7 +942,7 @@ function App() {
         <nav className="tab-row">
           <button className={activeTab === 'events' ? 'active' : ''} onClick={() => setActiveTab('events')}>Events</button>
           <button className={activeTab === 'wallets' ? 'active' : ''} onClick={() => setActiveTab('wallets')}>Wallets</button>
-          <button className={activeTab === 'insider' ? 'active' : ''} onClick={() => setActiveTab('insider')}>Insider Lab</button>
+          <button className={activeTab === 'insider' ? 'active' : ''} onClick={() => setActiveTab('insider')}>Trader Finder</button>
           <button className={activeTab === 'chat' ? 'active' : ''} onClick={() => setActiveTab('chat')}>Chat</button>
         </nav>
 
@@ -951,27 +976,47 @@ function App() {
           {activeTab === 'insider' && (
             <div className="insider-lab">
               <div className="scan-grid">
-                <label>Pre-crash start<input type="datetime-local" value={scanForm.preCrashStartUtc} onChange={(e) => setScanForm({ ...scanForm, preCrashStartUtc: e.target.value })} /></label>
-                <label>Pre-crash end<input type="datetime-local" value={scanForm.preCrashEndUtc} onChange={(e) => setScanForm({ ...scanForm, preCrashEndUtc: e.target.value })} /></label>
-                <label>Dip-buy start<input type="datetime-local" value={scanForm.dipBuyStartUtc} onChange={(e) => setScanForm({ ...scanForm, dipBuyStartUtc: e.target.value })} /></label>
-                <label>Dip-buy end<input type="datetime-local" value={scanForm.dipBuyEndUtc} onChange={(e) => setScanForm({ ...scanForm, dipBuyEndUtc: e.target.value })} /></label>
+                <label>Start<input type="datetime-local" value={traderForm.startUtc} onChange={(e) => setTraderForm({ ...traderForm, startUtc: e.target.value })} /></label>
+                <label>End<input type="datetime-local" value={traderForm.endUtc} onChange={(e) => setTraderForm({ ...traderForm, endUtc: e.target.value })} /></label>
+                <label>Min portfolio USD<input type="number" min="0" step="10000" value={traderForm.minimumStartingValueUsd} onChange={(e) => setTraderForm({ ...traderForm, minimumStartingValueUsd: Number(e.target.value) })} /></label>
+                <label>Top wallets<input type="number" min="1" max="100" value={traderForm.top} onChange={(e) => setTraderForm({ ...traderForm, top: Number(e.target.value) })} /></label>
               </div>
-              <button className="primary-action" onClick={runScan}><Database size={16} /> Run historical scan</button>
+              <label className="wallet-seed-field">
+                Candidate wallets
+                <textarea
+                  value={traderForm.candidateWallets}
+                  onChange={(e) => setTraderForm({ ...traderForm, candidateWallets: e.target.value })}
+                  placeholder="0x... addresses, one per line"
+                />
+              </label>
+              <button className="primary-action" disabled={isTraderScanRunning} onClick={runTraderScan}>
+                <Database size={16} /> {isTraderScanRunning ? 'Analyzing wallets...' : 'Find top traders'}
+              </button>
               <div className="scan-list">
-                {scans.map((scan) => (
-                  <button key={scan.id} onClick={() => loadCandidates(scan.id)}>
-                    Scan #{scan.id} · {scan.candidateCount} candidates · {formatTime(scan.createdAt)}
+                {traderScans.map((scan) => (
+                  <button key={scan.id} onClick={() => loadTraderCandidates(scan.id)}>
+                    Scan #{scan.id} · {scan.qualifiedWalletCount}/{scan.evaluatedWalletCount} qualified · {formatTime(scan.createdAt)}
                   </button>
                 ))}
               </div>
               <div className="candidate-list">
-                {candidates.map((candidate) => (
+                {traderCandidates.length > 0 && (
+                  <button className="secondary-action" onClick={() => trackTopTraders(traderCandidates[0].traderScanId)}>
+                    <Plus size={16} /> Track top 10
+                  </button>
+                )}
+                {traderCandidates.map((candidate) => (
                   <div className="candidate-row" key={candidate.id}>
                     <div>
                       <strong>{shortAddress(candidate.walletAddress)}</strong>
-                      <span>{candidate.assetSymbol} · score {Number(candidate.insiderScore || 0).toFixed(1)} · profit {formatUsd(candidate.estimatedProfitUsd)}</span>
+                      <span>
+                        score {Number(candidate.score || 0).toFixed(1)} · profit {formatUsd(candidate.adjustedProfitUsd)} · return {Number(candidate.adjustedReturnPercent || 0).toFixed(2)}%
+                      </span>
+                      <small>
+                        {formatUsd(candidate.startingValueUsd)} → {formatUsd(candidate.endingValueUsd)} · external in {formatUsd(candidate.receivedExternalUsd)} · out {formatUsd(candidate.sentExternalUsd)}
+                      </small>
                     </div>
-                    <button onClick={() => promoteCandidate(candidate)} aria-label="Promote candidate"><Plus size={16} /></button>
+                    <button onClick={() => trackTraderCandidate(candidate)} aria-label="Track trader"><Plus size={16} /></button>
                   </div>
                 ))}
               </div>

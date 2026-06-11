@@ -48,6 +48,10 @@ public class WhaleTrackerDbContext : DbContext
 
     public DbSet<LiveEventEntity> LiveEvents => Set<LiveEventEntity>();
 
+    public DbSet<TraderScanEntity> TraderScans => Set<TraderScanEntity>();
+
+    public DbSet<TraderCandidateEntity> TraderCandidates => Set<TraderCandidateEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -118,6 +122,22 @@ public class WhaleTrackerDbContext : DbContext
             entity.HasIndex(e => e.Type);
             entity.HasIndex(e => e.WalletAddress);
             entity.HasIndex(e => e.TxHash);
+        });
+
+        modelBuilder.Entity<TraderScanEntity>(entity =>
+        {
+            entity.HasIndex(e => e.CreatedAt);
+            entity.HasMany(e => e.Candidates)
+                .WithOne(e => e.TraderScan)
+                .HasForeignKey(e => e.TraderScanId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<TraderCandidateEntity>(entity =>
+        {
+            entity.HasIndex(e => e.WalletAddress);
+            entity.HasIndex(e => e.Score);
+            entity.HasIndex(e => e.AdjustedProfitUsd);
         });
     }
 }
