@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WhaleTracker.Core.Interfaces;
 using WhaleTracker.Core.Models;
@@ -9,6 +10,7 @@ namespace WhaleTracker.API.Controllers;
 /// Balina cüzdanı takibi
 /// </summary>
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public class WhaleController : ControllerBase
 {
