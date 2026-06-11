@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using WhaleTracker.Core.Interfaces;
 using WhaleTracker.Data;
 using WhaleTracker.Data.Entities;
 
@@ -13,10 +14,14 @@ public class RuntimeControlController : ControllerBase
 {
     private const string GlobalControlId = "global";
     private readonly WhaleTrackerDbContext _db;
+    private readonly IWhaleTrackerService _whaleTrackerService;
 
-    public RuntimeControlController(WhaleTrackerDbContext db)
+    public RuntimeControlController(
+        WhaleTrackerDbContext db,
+        IWhaleTrackerService whaleTrackerService)
     {
         _db = db;
+        _whaleTrackerService = whaleTrackerService;
     }
 
     [HttpGet]
@@ -46,6 +51,45 @@ public class RuntimeControlController : ControllerBase
         control.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(cancellationToken);
         return Ok(control);
+    }
+
+    [HttpPost("scan-now")]
+    public async Task<IActionResult> ScanNow(CancellationToken cancellationToken = default)
+    {
+        var control = await GetOrCreateAsync(cancellationToken);
+        control.LastScanStartedAt = DateTime.UtcNow;
+        control.LastError = string.Empty;
+        control.UpdatedAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(cancellationToken);
+
+        try
+        {
+            await _whaleTrackerService.ScanAndProcessAsync();
+
+            control.LastScanCompletedAt = DateTime.UtcNow;
+            control.UpdatedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(cancellationToken);
+
+            return Ok(new
+            {
+                success = true,
+                control.LastScanStartedAt,
+                control.LastScanCompletedAt
+            });
+        }
+        catch (Exception ex)
+        {
+            control.LastError = ex.Message;
+            control.UpdatedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(cancellationToken);
+
+            return StatusCode(500, new
+            {
+                success = false,
+                error = ex.Message,
+                control.LastScanStartedAt
+            });
+        }
     }
 
     private async Task<RuntimeControlEntity> GetOrCreateAsync(CancellationToken cancellationToken)

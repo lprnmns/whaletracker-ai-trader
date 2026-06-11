@@ -21,6 +21,7 @@ const aiMemoryRows = document.getElementById("aiMemoryRows");
 const refreshRuntimeBtn = document.getElementById("refreshRuntime");
 const enableRuntimeBtn = document.getElementById("enableRuntime");
 const disableRuntimeBtn = document.getElementById("disableRuntime");
+const scanNowBtn = document.getElementById("scanNow");
 const runtimeIntervalInput = document.getElementById("runtimeInterval");
 const runtimeDetails = document.getElementById("runtimeDetails");
 const refreshOperationsBtn = document.getElementById("refreshOperations");
@@ -407,6 +408,30 @@ async function updateRuntime(enabled) {
   }
 }
 
+async function scanNow() {
+  scanNowBtn.disabled = true;
+  scanNowBtn.textContent = "Scanning...";
+
+  try {
+    const result = await fetchJson("/api/runtime-control/scan-now", {
+      method: "POST",
+    });
+    showAlert(`Scan completed at ${formatDate(result.lastScanCompletedAt)}.`, false);
+    await Promise.all([
+      loadStatus(),
+      loadOperations(),
+      loadAiMemory(),
+      loadTrackedWallets(),
+    ]);
+  } catch (err) {
+    showAlert(`Scan failed: ${err.message}`);
+    await loadStatus();
+  } finally {
+    scanNowBtn.disabled = false;
+    scanNowBtn.textContent = "Scan Now";
+  }
+}
+
 logoutBtn?.addEventListener("click", async () => {
   await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
   window.location.href = "/login.html";
@@ -472,6 +497,7 @@ refreshAiMemoryBtn?.addEventListener("click", loadAiMemory);
 refreshRuntimeBtn?.addEventListener("click", loadStatus);
 enableRuntimeBtn?.addEventListener("click", () => updateRuntime(true));
 disableRuntimeBtn?.addEventListener("click", () => updateRuntime(false));
+scanNowBtn?.addEventListener("click", scanNow);
 refreshOperationsBtn?.addEventListener("click", loadOperations);
 
 document.addEventListener("DOMContentLoaded", () => {
