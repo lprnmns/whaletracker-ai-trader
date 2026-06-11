@@ -9,6 +9,7 @@ const scanRows = document.getElementById("scanRows");
 const candidateRows = document.getElementById("candidateRows");
 const candidateScanTag = document.getElementById("candidateScanTag");
 const exportCandidatesLink = document.getElementById("exportCandidates");
+const promoteCandidatesBtn = document.getElementById("promoteCandidates");
 const trackedWalletRows = document.getElementById("trackedWalletRows");
 const runHistoricalScanBtn = document.getElementById("runHistoricalScan");
 const refreshScansBtn = document.getElementById("refreshScans");
@@ -189,6 +190,8 @@ async function loadCandidates(scanId) {
   candidateScanTag.textContent = `Scan #${scanId}`;
   exportCandidatesLink.href = `/api/historical-scans/${scanId}/candidates.csv`;
   exportCandidatesLink.classList.remove("disabled");
+  promoteCandidatesBtn.disabled = false;
+  promoteCandidatesBtn.dataset.scanId = scanId;
   candidateRows.innerHTML = `<tr><td colspan="5" class="text-muted">Loading...</td></tr>`;
 
   try {
@@ -497,6 +500,30 @@ async function processManualEvent() {
   }
 }
 
+async function promoteTopCandidates() {
+  const scanId = promoteCandidatesBtn.dataset.scanId;
+  if (!scanId) {
+    showAlert("Select a scan first.");
+    return;
+  }
+
+  promoteCandidatesBtn.disabled = true;
+  promoteCandidatesBtn.textContent = "Tracking...";
+
+  try {
+    const result = await fetchJson(`/api/historical-scans/${scanId}/promote-candidates?minScore=25&limit=20`, {
+      method: "POST",
+    });
+    showAlert(`Promoted ${result.promoted} wallets from scan #${scanId}.`, false);
+    await loadTrackedWallets();
+  } catch (err) {
+    showAlert(`Promotion failed: ${err.message}`);
+  } finally {
+    promoteCandidatesBtn.disabled = false;
+    promoteCandidatesBtn.textContent = "Track Top";
+  }
+}
+
 logoutBtn?.addEventListener("click", async () => {
   await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
   window.location.href = "/login.html";
@@ -566,6 +593,7 @@ scanNowBtn?.addEventListener("click", scanNow);
 refreshOperationsBtn?.addEventListener("click", loadOperations);
 processManualEventBtn?.addEventListener("click", processManualEvent);
 refreshProvidersBtn?.addEventListener("click", loadProviders);
+promoteCandidatesBtn?.addEventListener("click", promoteTopCandidates);
 
 document.addEventListener("DOMContentLoaded", () => {
   loadStatus();

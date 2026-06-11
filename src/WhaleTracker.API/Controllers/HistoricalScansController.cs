@@ -149,6 +149,71 @@ public class HistoricalScansController : ControllerBase
             $"historical-scan-{scanId}-candidates.csv");
     }
 
+    [HttpPost("{scanId:long}/promote-candidates")]
+    public async Task<IActionResult> PromoteCandidates(
+        long scanId,
+        [FromQuery] decimal minScore = 25m,
+        [FromQuery] int limit = 20,
+        CancellationToken cancellationToken = default)
+    {
+        limit = Math.Clamp(limit, 1, 100);
+
+        var candidates = await _db.InsiderCandidates
+            .Where(x => x.HistoricalScanId == scanId && x.InsiderScore >= minScore)
+            .OrderByDescending(x => x.InsiderScore)
+            .ThenByDescending(x => x.EstimatedProfitUsd)
+            .Take(limit)
+            .ToListAsync(cancellationToken);
+
+        var promoted = 0;
+        foreach (var candidate in candidates)
+        {
+            var walletAddress = candidate.WalletAddress.Trim().ToLowerInvariant();
+            var existing = await _db.TrackedWallets
+                .FirstOrDefaultAsync(x => x.WalletAddress == walletAddress, cancellationToken);
+
+            if (existing == null)
+            {
+                _db.TrackedWallets.Add(new TrackedWalletEntity
+                {
+                    WalletAddress = walletAddress,
+                    Label = $"insider-{candidate.AssetSymbol}-{candidate.Id}",
+                    Source = "historical_scan_auto",
+                    Chain = "ethereum",
+                    IsActive = true,
+                    ConfidenceScore = candidate.InsiderScore,
+                    EstimatedProfitUsd = candidate.EstimatedProfitUsd,
+                    AssetSymbol = candidate.AssetSymbol,
+                    HistoricalScanId = candidate.HistoricalScanId,
+                    InsiderCandidateId = candidate.Id,
+                    Notes = $"Auto-promoted with minScore {minScore}."
+                });
+                promoted++;
+                continue;
+            }
+
+            existing.IsActive = true;
+            existing.ConfidenceScore = Math.Max(existing.ConfidenceScore, candidate.InsiderScore);
+            existing.EstimatedProfitUsd = Math.Max(existing.EstimatedProfitUsd, candidate.EstimatedProfitUsd);
+            existing.AssetSymbol = string.IsNullOrWhiteSpace(existing.AssetSymbol) ? candidate.AssetSymbol : existing.AssetSymbol;
+            existing.HistoricalScanId ??= candidate.HistoricalScanId;
+            existing.InsiderCandidateId ??= candidate.Id;
+            existing.UpdatedAt = DateTime.UtcNow;
+            promoted++;
+        }
+
+        await _db.SaveChangesAsync(cancellationToken);
+
+        return Ok(new
+        {
+            scanId,
+            minScore,
+            limit,
+            matched = candidates.Count,
+            promoted
+        });
+    }
+
     private async Task<HistoricalScanEntity> SaveScanAsync(
         InsiderDetectionRequest request,
         InsiderDetectionResult result,
