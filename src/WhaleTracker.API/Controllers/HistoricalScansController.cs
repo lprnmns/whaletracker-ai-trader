@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Text;
 using System.Text.Json;
 using WhaleTracker.Core.Interfaces;
 using WhaleTracker.Core.Models;
@@ -109,6 +110,45 @@ public class HistoricalScansController : ControllerBase
         }));
     }
 
+    [HttpGet("{scanId:long}/candidates.csv")]
+    public async Task<IActionResult> ExportCandidatesCsv(long scanId, CancellationToken cancellationToken = default)
+    {
+        var candidates = await _db.InsiderCandidates
+            .AsNoTracking()
+            .Where(x => x.HistoricalScanId == scanId)
+            .OrderByDescending(x => x.InsiderScore)
+            .ThenByDescending(x => x.EstimatedProfitUsd)
+            .ToListAsync(cancellationToken);
+
+        var csv = new StringBuilder();
+        csv.AppendLine("wallet_address,asset_symbol,estimated_profit_usd,matched_asset_amount,average_sell_price_usd,average_buy_price_usd,insider_score,timing_score,size_score,profit_score,evidence_tx_hashes,created_at");
+
+        foreach (var item in candidates)
+        {
+            var evidence = JsonSerializer.Deserialize<List<string>>(item.EvidenceTxHashesJson) ?? new List<string>();
+            csv.AppendLine(string.Join(",", new[]
+            {
+                Csv(item.WalletAddress),
+                Csv(item.AssetSymbol),
+                item.EstimatedProfitUsd.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                item.MatchedAssetAmount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                item.AverageSellPriceUsd.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                item.AverageBuyPriceUsd.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                item.InsiderScore.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                item.TimingScore.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                item.SizeScore.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                item.ProfitScore.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                Csv(string.Join(" ", evidence)),
+                Csv(item.CreatedAt.ToString("O"))
+            }));
+        }
+
+        return File(
+            Encoding.UTF8.GetBytes(csv.ToString()),
+            "text/csv",
+            $"historical-scan-{scanId}-candidates.csv");
+    }
+
     private async Task<HistoricalScanEntity> SaveScanAsync(
         InsiderDetectionRequest request,
         InsiderDetectionResult result,
@@ -143,5 +183,10 @@ public class HistoricalScansController : ControllerBase
         _db.HistoricalScans.Add(scan);
         await _db.SaveChangesAsync(cancellationToken);
         return scan;
+    }
+
+    private static string Csv(string value)
+    {
+        return "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
     }
 }

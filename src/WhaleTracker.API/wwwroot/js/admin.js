@@ -8,6 +8,7 @@ const logoutBtn = document.getElementById("logoutBtn");
 const scanRows = document.getElementById("scanRows");
 const candidateRows = document.getElementById("candidateRows");
 const candidateScanTag = document.getElementById("candidateScanTag");
+const exportCandidatesLink = document.getElementById("exportCandidates");
 const trackedWalletRows = document.getElementById("trackedWalletRows");
 const runHistoricalScanBtn = document.getElementById("runHistoricalScan");
 const refreshScansBtn = document.getElementById("refreshScans");
@@ -186,6 +187,8 @@ async function loadScans() {
 
 async function loadCandidates(scanId) {
   candidateScanTag.textContent = `Scan #${scanId}`;
+  exportCandidatesLink.href = `/api/historical-scans/${scanId}/candidates.csv`;
+  exportCandidatesLink.classList.remove("disabled");
   candidateRows.innerHTML = `<tr><td colspan="5" class="text-muted">Loading...</td></tr>`;
 
   try {
