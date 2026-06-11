@@ -21,6 +21,13 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: src/WhaleTracker.UI/package-lock.json
+
       - name: Restore
         run: dotnet restore
 
@@ -29,3 +36,9 @@ jobs:
 
       - name: Test
         run: dotnet test tests/WhaleTracker.Tests/WhaleTracker.Tests.csproj --configuration Release --no-build
+
+      - name: Build UI
+        working-directory: src/WhaleTracker.UI
+        run: |
+          npm ci
+          npm run build
