@@ -36,14 +36,16 @@ public class WhaleController : ControllerBase
     /// GET /api/whale/portfolio
     /// </summary>
     [HttpGet("portfolio")]
-    public async Task<IActionResult> GetWhalePortfolio()
+    public async Task<IActionResult> GetWhalePortfolio([FromQuery] string? address = null)
     {
-        if (string.IsNullOrWhiteSpace(_whaleAddress))
+        var walletAddress = string.IsNullOrWhiteSpace(address) ? _whaleAddress : address.Trim();
+        if (string.IsNullOrWhiteSpace(walletAddress) ||
+            walletAddress.Contains("BALINA", StringComparison.OrdinalIgnoreCase))
         {
-            return BadRequest(new { error = "Zerion:WhaleAddress is not configured." });
+            return BadRequest(new { error = "A valid wallet address query parameter is required." });
         }
 
-        var portfolio = await _zerionService.GetWalletPortfolioAsync(_whaleAddress);
+        var portfolio = await _zerionService.GetWalletPortfolioAsync(walletAddress);
         return Ok(portfolio);
     }
 

@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WhaleTracker.Core.Interfaces;
@@ -19,6 +20,7 @@ public class ZerionService : IZerionService
     private readonly HttpClient _httpClient;
     private readonly ILogger<ZerionService> _logger;
     private readonly ZerionSettings _settings;
+    private readonly ConcurrentDictionary<string, WhaleStats> _portfolioCache = new(StringComparer.OrdinalIgnoreCase);
 
     private const string BASE_URL = "https://api.zerion.io/v1/";
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -63,15 +65,60 @@ public class ZerionService : IZerionService
 
         EnsureConfigured();
 
-        var portfolioJson = await GetJsonAsync($"/wallets/{walletAddress}/portfolio?currency=usd");
-        var totalUsd = ExtractPortfolioTotal(portfolioJson);
-        var holdings = await GetWalletHoldingsAsync(walletAddress);
+        decimal totalUsd = 0;
+        var holdings = new List<Holding>();
+        Exception? portfolioError = null;
+        Exception? holdingsError = null;
 
-        return new WhaleStats
+        try
+        {
+            var portfolioJson = await GetJsonAsync($"/wallets/{walletAddress}/portfolio?currency=usd");
+            totalUsd = ExtractPortfolioTotal(portfolioJson);
+        }
+        catch (Exception ex)
+        {
+            portfolioError = ex;
+            _logger.LogWarning(ex, "Zerion portfolio total fetch failed for {Address}.", walletAddress);
+        }
+
+        try
+        {
+            holdings = await GetWalletHoldingsAsync(walletAddress);
+        }
+        catch (Exception ex)
+        {
+            holdingsError = ex;
+            _logger.LogWarning(ex, "Zerion holdings fetch failed for {Address}.", walletAddress);
+        }
+
+        if (totalUsd <= 0 && holdings.Count > 0)
+        {
+            totalUsd = holdings.Sum(x => x.UsdValue);
+        }
+
+        if (totalUsd <= 0 && _portfolioCache.TryGetValue(walletAddress, out var cached))
+        {
+            _logger.LogWarning("Using cached Zerion portfolio for {Address}.", walletAddress);
+            return cached;
+        }
+
+        if (totalUsd <= 0 && portfolioError != null && holdingsError != null)
+        {
+            throw new HttpRequestException("Zerion portfolio and holdings requests both failed.", portfolioError);
+        }
+
+        var result = new WhaleStats
         {
             TotalUsd = totalUsd,
             Holdings = holdings
         };
+
+        if (result.TotalUsd > 0)
+        {
+            _portfolioCache[walletAddress] = result;
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -132,16 +179,33 @@ public class ZerionService : IZerionService
     /// </summary>
     private async Task<string> GetJsonAsync(string requestUri)
     {
-        var response = await _httpClient.GetAsync(requestUri.TrimStart('/'));
-        var json = await response.Content.ReadAsStringAsync();
-
-        if (!response.IsSuccessStatusCode)
+        for (var attempt = 1; attempt <= 3; attempt++)
         {
-            _logger.LogWarning("Zerion API error {Status}: {Body}", response.StatusCode, json);
-            throw new HttpRequestException($"Zerion API returned {(int)response.StatusCode} for {requestUri}");
+            using var response = await _httpClient.GetAsync(requestUri.TrimStart('/'));
+            var json = await response.Content.ReadAsStringAsync();
+
+            if (response.IsSuccessStatusCode)
+            {
+                return json;
+            }
+
+            var retryable = (int)response.StatusCode == 429 || (int)response.StatusCode >= 500;
+            _logger.LogWarning(
+                "Zerion API error {Status} on attempt {Attempt}: {Body}",
+                response.StatusCode,
+                attempt,
+                json);
+
+            if (!retryable || attempt == 3)
+            {
+                throw new HttpRequestException($"Zerion API returned {(int)response.StatusCode} for {requestUri}");
+            }
+
+            var delay = response.Headers.RetryAfter?.Delta ?? TimeSpan.FromMilliseconds(350 * attempt);
+            await Task.Delay(delay);
         }
 
-        return json;
+        throw new HttpRequestException($"Zerion API request failed for {requestUri}");
     }
 
     private async Task<List<Holding>> GetWalletHoldingsAsync(string walletAddress)

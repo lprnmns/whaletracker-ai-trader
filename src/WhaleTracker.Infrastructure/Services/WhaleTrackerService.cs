@@ -2,6 +2,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using WhaleTracker.Core.Interfaces;
 using WhaleTracker.Core.Models;
 using WhaleTracker.Data;
@@ -263,6 +264,9 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
 
         var userStats = await _okxService.GetAccountInfoAsync();
         var promptMemory = await _biasMemoryService.BuildPromptMemoryAsync();
+        var proportionalAmountUsdt = whaleStats.TotalUsd > 0
+            ? transaction.UsdValue / whaleStats.TotalUsd * userStats.TotalUsd
+            : 0;
         await _liveEvents.PublishAsync(
             LiveEventTypes.AiAwakened,
             $"AI evaluating {transaction.NormalizedSymbol} movement",
@@ -274,10 +278,14 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
             {
                 whaleBalanceUsd = whaleStats.TotalUsd,
                 okxBalanceUsd = userStats.TotalUsd,
-                okxPositions = userStats.ActivePositions.Count
+                okxPositions = userStats.ActivePositions.Count,
+                transactionValueUsd = transaction.UsdValue,
+                proportionalAmountUsdt
             });
 
-        var aiDecision = await _aiService.AnalyzeMovementAsync(BuildAiContext(whaleStats, userStats, transaction, promptMemory));
+        var aiContext = BuildAiContext(whaleStats, userStats, transaction, promptMemory);
+        var aiDecision = await _aiService.AnalyzeMovementAsync(aiContext);
+        NormalizeDecisionForExecution(aiDecision, aiContext);
         var signal = MapDecisionToSignal(aiDecision, transaction);
         await _biasMemoryService.RecordDecisionAsync(transaction, aiDecision, whaleAddress, whaleStats.TotalUsd);
         await _liveEvents.PublishAsync(
@@ -468,6 +476,97 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
                 : decision.Reasoning,
             SourceTxHash = transaction.TxHash
         };
+    }
+
+    private static void NormalizeDecisionForExecution(AIDecision decision, AIContext context)
+    {
+        var rawAction = decision.Action;
+        var rawSymbol = decision.Symbol;
+
+        if (string.Equals(decision.Reasoning, "Miktar 0 veya negatif", StringComparison.OrdinalIgnoreCase) &&
+            TryReadRawDecision(decision.RawResponse, out var parsedAction, out var parsedSymbol))
+        {
+            rawAction = parsedAction;
+            rawSymbol = parsedSymbol;
+        }
+
+        rawAction = rawAction.ToUpperInvariant() switch
+        {
+            "BUY" => "LONG",
+            "OPEN_LONG" => "LONG",
+            "SELL" => "CLOSE_LONG",
+            "SHORT" => "CLOSE_LONG",
+            "CLOSE" => "CLOSE_LONG",
+            _ => rawAction.ToUpperInvariant()
+        };
+        rawSymbol = NormalizeSymbol(rawSymbol, context.NewMovement.Symbol);
+
+        if (rawAction == "CLOSE_LONG")
+        {
+            var hasMatchingLong = context.OurPositions.Any(position =>
+                position.Direction.Contains("LONG", StringComparison.OrdinalIgnoreCase) &&
+                (position.Symbol.Equals(rawSymbol, StringComparison.OrdinalIgnoreCase) ||
+                 position.Symbol.StartsWith($"{rawSymbol}-", StringComparison.OrdinalIgnoreCase)));
+
+            if (!hasMatchingLong)
+            {
+                decision.Action = "IGNORE";
+                decision.Symbol = rawSymbol;
+                decision.ShouldTrade = false;
+                decision.AmountUSDT = 0;
+                decision.Reasoning = $"Kapatılacak açık {rawSymbol} LONG pozisyonu yok";
+                return;
+            }
+        }
+
+        if ((rawAction == "LONG" || rawAction == "CLOSE_LONG") && decision.AmountUSDT <= 0)
+        {
+            if (context.WhaleBalanceUSDT <= 0 || context.OurBalanceUSDT <= 0 || context.NewMovement.ValueUSDT <= 0)
+            {
+                decision.Action = "IGNORE";
+                decision.Symbol = rawSymbol;
+                decision.ShouldTrade = false;
+                decision.Reasoning = "Emir miktarı hesaplanamadı: wallet veya OKX portföy değeri mevcut değil";
+                return;
+            }
+
+            decision.AmountUSDT = Math.Round(
+                context.NewMovement.ValueUSDT / context.WhaleBalanceUSDT * context.OurBalanceUSDT,
+                8);
+        }
+
+        decision.Action = rawAction;
+        decision.Symbol = rawSymbol;
+        decision.ShouldTrade = rawAction == "LONG" || rawAction == "CLOSE_LONG";
+    }
+
+    private static bool TryReadRawDecision(string rawResponse, out string action, out string symbol)
+    {
+        action = string.Empty;
+        symbol = string.Empty;
+        var start = rawResponse.IndexOf('{');
+        var end = rawResponse.LastIndexOf('}');
+        if (start < 0 || end <= start)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(rawResponse[start..(end + 1)]);
+            var root = document.RootElement;
+            action = root.TryGetProperty("action", out var actionElement)
+                ? actionElement.GetString() ?? string.Empty
+                : string.Empty;
+            symbol = root.TryGetProperty("symbol", out var symbolElement)
+                ? symbolElement.GetString() ?? string.Empty
+                : string.Empty;
+            return !string.IsNullOrWhiteSpace(action);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static string NormalizeMovementType(TransactionEvent transaction)
