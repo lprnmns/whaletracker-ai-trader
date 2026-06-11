@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text;
@@ -10,6 +11,7 @@ using WhaleTracker.Data.Entities;
 namespace WhaleTracker.API.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/historical-scans")]
 public class HistoricalScansController : ControllerBase
 {

@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Text;
 using WhaleTracker.Data.Repositories;
@@ -9,6 +10,7 @@ namespace WhaleTracker.API.Controllers;
 /// Geçmiş işlem kayıtları
 /// </summary>
 [ApiController]
+[Authorize]
 [Route("api/[controller]")]
 public class TradesController : ControllerBase
 {

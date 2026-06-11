@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WhaleTracker.Core.Interfaces;
 using WhaleTracker.Core.Models;
@@ -5,6 +6,7 @@ using WhaleTracker.Core.Models;
 namespace WhaleTracker.API.Controllers;
 
 [ApiController]
+[Authorize]
 [Route("api/insider-detection")]
 public class InsiderDetectionController : ControllerBase
 {
