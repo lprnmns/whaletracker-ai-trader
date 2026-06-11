@@ -20,6 +20,10 @@ export default defineConfig({
         target: 'http://localhost:5090',
         changeOrigin: true,
       },
+      '/admin.html': {
+        target: 'http://localhost:5090',
+        changeOrigin: true,
+      },
       '/js': {
         target: 'http://localhost:5090',
         changeOrigin: true,

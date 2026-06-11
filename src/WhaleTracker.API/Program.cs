@@ -62,6 +62,31 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
         options.LoginPath = "/login.html";
         options.SlidingExpiration = true;
         options.ExpireTimeSpan = TimeSpan.FromHours(12);
+        options.Events = new CookieAuthenticationEvents
+        {
+            OnRedirectToLogin = context =>
+            {
+                if (IsApiOrHubRequest(context.Request))
+                {
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    return Task.CompletedTask;
+                }
+
+                context.Response.Redirect(context.RedirectUri);
+                return Task.CompletedTask;
+            },
+            OnRedirectToAccessDenied = context =>
+            {
+                if (IsApiOrHubRequest(context.Request))
+                {
+                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    return Task.CompletedTask;
+                }
+
+                context.Response.Redirect(context.RedirectUri);
+                return Task.CompletedTask;
+            }
+        };
     });
 
 builder.Services.AddAuthorization();
@@ -154,6 +179,12 @@ app.Logger.LogInformation("📊 Swagger: https://localhost:5001");
 app.Logger.LogInformation("🔧 Environment: {Env}", app.Environment.EnvironmentName);
 
 app.Run();
+
+static bool IsApiOrHubRequest(HttpRequest request)
+{
+    return request.Path.StartsWithSegments("/api") ||
+           request.Path.StartsWithSegments("/hubs");
+}
 
 static void EnsureTrackedWalletSchema(WhaleTrackerDbContext db)
 {

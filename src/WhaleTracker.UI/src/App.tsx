@@ -266,7 +266,14 @@ function App() {
     connection
       .start()
       .then(() => setConnectionState(connection.state === HubConnectionState.Connected ? 'live' : connection.state))
-      .catch(() => setConnectionState('offline'))
+      .catch((error) => {
+        if (String(error).includes('401') || String(error).includes('Unauthorized')) {
+          window.location.href = '/login.html'
+          return
+        }
+
+        setConnectionState('offline')
+      })
 
     return () => {
       connection.stop()
