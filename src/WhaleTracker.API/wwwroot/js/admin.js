@@ -244,9 +244,14 @@ async function loadTrackedWallets() {
           <td>${formatUsd(wallet.estimatedProfitUsd)}</td>
           <td>${formatDate(wallet.lastCheckedAt)}</td>
           <td class="text-end">
-            <button class="btn btn-outline-light btn-sm" data-toggle-wallet="${wallet.id}" data-active="${wallet.isActive}">
-              ${wallet.isActive ? "Pause" : "Resume"}
-            </button>
+            <div class="btn-group btn-group-sm">
+              <button class="btn btn-outline-light" data-toggle-wallet="${wallet.id}" data-active="${wallet.isActive}">
+                ${wallet.isActive ? "Pause" : "Resume"}
+              </button>
+              <button class="btn btn-outline-danger" data-delete-wallet="${wallet.id}" data-wallet-address="${escapeHtml(wallet.walletAddress)}">
+                Delete
+              </button>
+            </div>
           </td>
         </tr>`)
       .join("");
@@ -608,6 +613,32 @@ trackedWalletRows?.addEventListener("click", async (event) => {
     await loadTrackedWallets();
   } catch (err) {
     showAlert(`Wallet update failed: ${err.message}`);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+trackedWalletRows?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-wallet]");
+  if (!button) {
+    return;
+  }
+
+  const walletAddress = button.dataset.walletAddress || "this wallet";
+  if (!window.confirm(`Delete ${walletAddress} from tracked wallets?`)) {
+    return;
+  }
+
+  button.disabled = true;
+
+  try {
+    await fetchJson(`/api/tracked-wallets/${button.dataset.deleteWallet}`, {
+      method: "DELETE",
+    });
+    await loadTrackedWallets();
+    showAlert("Wallet deleted.", false);
+  } catch (err) {
+    showAlert(`Wallet delete failed: ${err.message}`);
   } finally {
     button.disabled = false;
   }
