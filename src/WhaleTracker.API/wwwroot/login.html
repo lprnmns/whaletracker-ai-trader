@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WhaleTracker Login</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="css/app.css" rel="stylesheet" />
+  <script src="js/login.js" defer></script>
+</head>
+<body>
+  <div class="bg-shape bg-shape-a"></div>
+  <div class="bg-shape bg-shape-b"></div>
+
+  <main class="container">
+    <div class="card panel-card login-card">
+      <h4 class="mb-3">Login</h4>
+      <p class="text-muted">Admin panel and logs require login.</p>
+      <div class="alert alert-danger d-none" id="loginError"></div>
+      <form id="loginForm">
+        <div class="mb-3 field-group">
+          <label class="form-label">Username</label>
+          <input class="form-control" type="text" id="username" autocomplete="username" required />
+        </div>
+        <div class="mb-3 field-group">
+          <label class="form-label">Password</label>
+          <input class="form-control" type="password" id="password" autocomplete="current-password" required />
+        </div>
+        <button class="btn btn-primary w-100" type="submit">Login</button>
+      </form>
+    </div>
+  </main>
+</body>
+</html>
