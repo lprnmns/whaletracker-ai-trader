@@ -117,6 +117,24 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
                 .OrderByDescending(x => x.BlockTimestamp)
                 .FirstOrDefault();
 
+            if (await IsInitialWalletScanAsync(walletAddress))
+            {
+                foreach (var existingTransaction in transactions.Where(x => !string.IsNullOrWhiteSpace(x.TxHash)))
+                {
+                    if (!await _tradeRepository.IsTransactionProcessedAsync(existingTransaction.TxHash))
+                    {
+                        await _tradeRepository.MarkTransactionProcessedAsync(existingTransaction.TxHash, false);
+                    }
+                }
+
+                await MarkWalletCheckedAsync(walletAddress, newestTransaction?.TxHash);
+                _logger.LogInformation(
+                    "Initial wallet baseline recorded for {Wallet}. {Count} existing transactions were marked as processed.",
+                    walletAddress,
+                    transactions.Count);
+                continue;
+            }
+
             foreach (var transaction in transactions.OrderBy(x => x.BlockTimestamp))
             {
                 if (string.IsNullOrWhiteSpace(transaction.TxHash))
@@ -201,6 +219,14 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
         await _db.SaveChangesAsync();
     }
 
+    private async Task<bool> IsInitialWalletScanAsync(string walletAddress)
+    {
+        var normalized = walletAddress.Trim().ToLowerInvariant();
+        return await _db.TrackedWallets
+            .AsNoTracking()
+            .AnyAsync(x => x.WalletAddress == normalized && x.LastCheckedAt == null);
+    }
+
     private Task<TradeSignal> ProcessTransactionAsync(TransactionEvent transaction, string walletAddress)
     {
         if (string.IsNullOrWhiteSpace(walletAddress))
@@ -278,7 +304,13 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
             signal.Decision == "TRADE" ? "warning" : "info");
 
         TradeResult? result = null;
-        if (string.Equals(signal.Decision, "TRADE", StringComparison.OrdinalIgnoreCase))
+        var autoTradingEnabled = await _db.RuntimeControls
+            .AsNoTracking()
+            .Where(x => x.Id == "global")
+            .Select(x => x.AutoTradingEnabled)
+            .FirstOrDefaultAsync();
+
+        if (string.Equals(signal.Decision, "TRADE", StringComparison.OrdinalIgnoreCase) && autoTradingEnabled)
         {
             result = await _okxService.ExecuteTradeAsync(signal);
             await _liveEvents.PublishAsync(
@@ -300,6 +332,24 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
                     signal.Leverage
                 },
                 result.Success ? "success" : "danger");
+        }
+        else if (string.Equals(signal.Decision, "TRADE", StringComparison.OrdinalIgnoreCase))
+        {
+            await _liveEvents.PublishAsync(
+                LiveEventTypes.TradeRejected,
+                "Trade skipped: auto trading is disabled.",
+                whaleAddress,
+                transaction.TxHash,
+                signal.Symbol,
+                transaction.UsdValue,
+                new
+                {
+                    signal.Decision,
+                    signal.Action,
+                    signal.TradeConfidence,
+                    signal.Reason,
+                    autoTradingEnabled
+                });
         }
         else
         {

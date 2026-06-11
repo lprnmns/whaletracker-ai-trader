@@ -300,6 +300,7 @@ function App() {
   const [chatQuestion, setChatQuestion] = useState('')
   const [chatLines, setChatLines] = useState<ChatLine[]>([])
   const [isChatThinking, setIsChatThinking] = useState(false)
+  const [eventPulseNow, setEventPulseNow] = useState(() => Date.now())
   const [scanForm, setScanForm] = useState({
     preCrashStartUtc: '',
     preCrashEndUtc: '',
@@ -342,6 +343,11 @@ function App() {
 
     animateAiCore()
     return () => cancelAnimationFrame(animationFrame)
+  }, [])
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setEventPulseNow(Date.now()), 1000)
+    return () => window.clearInterval(interval)
   }, [])
 
   const loadMissionState = useCallback(async () => {
@@ -440,10 +446,11 @@ function App() {
         size: 6 + Math.min(10, Number(wallet.confidenceScore || 0) / 10),
         wallet,
       })
-      links.push({ source: id, target: 'ai', color: wallet.isActive ? '#7dd3fc' : '#475569', particles: wallet.isActive ? 1 : 0 })
+      links.push({ source: id, target: 'ai', color: wallet.isActive ? '#7dd3fc' : '#475569', particles: 0 })
     })
 
     events.slice(0, 40).forEach((event) => {
+      const isFreshEvent = eventPulseNow - new Date(event.createdAt).getTime() <= 12_000
       const eventId = `event:${event.id}`
       nodes.set(eventId, {
         id: eventId,
@@ -456,16 +463,16 @@ function App() {
 
       const walletId = `wallet:${event.walletAddress}`
       if (event.walletAddress && nodes.has(walletId)) {
-        links.push({ source: walletId, target: eventId, color: '#38bdf8', particles: 2 })
+        links.push({ source: walletId, target: eventId, color: '#38bdf8', particles: isFreshEvent ? 2 : 0 })
       }
-      links.push({ source: eventId, target: 'ai', color: '#facc15', particles: 4 })
+      links.push({ source: eventId, target: 'ai', color: '#facc15', particles: isFreshEvent ? 4 : 0 })
       if (tradeEventTypes.has(event.type)) {
-        links.push({ source: 'ai', target: 'okx', color: event.severity === 'success' ? '#22c55e' : '#ef4444', particles: 5 })
+        links.push({ source: 'ai', target: 'okx', color: event.severity === 'success' ? '#22c55e' : '#ef4444', particles: isFreshEvent ? 5 : 0 })
       }
     })
 
     return { nodes: Array.from(nodes.values()), links }
-  }, [aiState.direction, events, operations?.okx?.totalUsd, wallets])
+  }, [aiState.direction, eventPulseNow, events, operations?.okx?.totalUsd, wallets])
 
   const nodeThreeObject = useCallback((node: GraphNode) => {
     const group = new THREE.Group()
