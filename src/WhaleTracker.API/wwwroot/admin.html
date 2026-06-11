@@ -347,7 +347,10 @@
       <div class="card-body">
         <div class="d-flex align-items-center justify-content-between mb-3">
           <h5 class="mb-0">Recent Executions</h5>
-          <span class="tag" id="operationsCheckedAt">--</span>
+          <div class="d-flex align-items-center gap-2">
+            <span class="tag" id="operationsCheckedAt">--</span>
+            <a class="btn btn-outline-light btn-sm" href="/api/trades/export.csv?count=1000">CSV</a>
+          </div>
         </div>
         <div class="table-responsive table-scroll">
           <table class="table table-dark table-borderless align-middle">

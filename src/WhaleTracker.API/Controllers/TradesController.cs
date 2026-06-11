@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using System.Text;
 using WhaleTracker.Data.Repositories;
 
 namespace WhaleTracker.API.Controllers;
@@ -95,5 +96,42 @@ public class TradesController : ControllerBase
                 })
                 .OrderByDescending(x => x.count)
         });
+    }
+
+    [HttpGet("export.csv")]
+    public async Task<IActionResult> ExportCsv([FromQuery] int count = 1000)
+    {
+        var trades = await _tradeRepository.GetRecentTradeLogsAsync(count);
+        var csv = new StringBuilder();
+        csv.AppendLine("created_at,whale_tx_hash,okx_order_id,symbol,action,margin_usdt,leverage,executed_price,is_success,error_message,confidence,ai_reason");
+
+        foreach (var trade in trades)
+        {
+            csv.AppendLine(string.Join(",", new[]
+            {
+                Csv(trade.CreatedAt.ToString("O")),
+                Csv(trade.WhaleTxHash),
+                Csv(trade.OkxOrderId ?? string.Empty),
+                Csv(trade.Symbol),
+                Csv(trade.Action),
+                trade.MarginUsdt.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                trade.Leverage.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                trade.ExecutedPrice?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+                trade.IsSuccess ? "true" : "false",
+                Csv(trade.ErrorMessage ?? string.Empty),
+                trade.Confidence.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                Csv(trade.AiReason ?? string.Empty)
+            }));
+        }
+
+        return File(
+            Encoding.UTF8.GetBytes(csv.ToString()),
+            "text/csv",
+            $"trade-logs-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv");
+    }
+
+    private static string Csv(string value)
+    {
+        return "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
     }
 }
