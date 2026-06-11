@@ -25,6 +25,7 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
     private readonly ITradeRepository _tradeRepository;
     private readonly IAiBiasMemoryService _biasMemoryService;
     private readonly INotificationService _notificationService;
+    private readonly ILiveEventPublisher _liveEvents;
     private readonly WhaleTrackerDbContext _db;
     private readonly ILogger<WhaleTrackerService> _logger;
     private readonly AppSettings _settings;
@@ -37,6 +38,7 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
         ITradeRepository tradeRepository,
         IAiBiasMemoryService biasMemoryService,
         INotificationService notificationService,
+        ILiveEventPublisher liveEvents,
         WhaleTrackerDbContext db,
         ILogger<WhaleTrackerService> logger,
         IOptions<AppSettings> settings)
@@ -48,6 +50,7 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
         _tradeRepository = tradeRepository;
         _biasMemoryService = biasMemoryService;
         _notificationService = notificationService;
+        _liveEvents = liveEvents;
         _db = db;
         _logger = logger;
         _settings = settings.Value;
@@ -125,6 +128,22 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
                 {
                     continue;
                 }
+
+                await _liveEvents.PublishAsync(
+                    LiveEventTypes.WalletActivityDetected,
+                    $"{transaction.Direction} {transaction.Amount:F4} {transaction.NormalizedSymbol} (${transaction.UsdValue:F2})",
+                    walletAddress,
+                    transaction.TxHash,
+                    transaction.NormalizedSymbol,
+                    transaction.UsdValue,
+                    new
+                    {
+                        transaction.Chain,
+                        transaction.TransactionType,
+                        transaction.BlockTimestamp,
+                        transaction.TokenSymbol,
+                        transaction.Amount
+                    });
 
                 var signal = await ProcessTransactionAsync(transaction, walletAddress);
                 await _tradeRepository.MarkTransactionProcessedAsync(
@@ -218,14 +237,86 @@ public class WhaleTrackerService : BackgroundService, IWhaleTrackerService
 
         var userStats = await _okxService.GetAccountInfoAsync();
         var promptMemory = await _biasMemoryService.BuildPromptMemoryAsync();
+        await _liveEvents.PublishAsync(
+            LiveEventTypes.AiAwakened,
+            $"AI evaluating {transaction.NormalizedSymbol} movement",
+            whaleAddress,
+            transaction.TxHash,
+            transaction.NormalizedSymbol,
+            transaction.UsdValue,
+            new
+            {
+                whaleBalanceUsd = whaleStats.TotalUsd,
+                okxBalanceUsd = userStats.TotalUsd,
+                okxPositions = userStats.ActivePositions.Count
+            });
+
         var aiDecision = await _aiService.AnalyzeMovementAsync(BuildAiContext(whaleStats, userStats, transaction, promptMemory));
         var signal = MapDecisionToSignal(aiDecision, transaction);
         await _biasMemoryService.RecordDecisionAsync(transaction, aiDecision, whaleAddress, whaleStats.TotalUsd);
+        await _liveEvents.PublishAsync(
+            LiveEventTypes.AiDecisionCompleted,
+            $"{signal.Decision} {signal.Action} {signal.Symbol} confidence {signal.TradeConfidence}",
+            whaleAddress,
+            transaction.TxHash,
+            signal.Symbol,
+            transaction.UsdValue,
+            new
+            {
+                aiDecision.Action,
+                aiDecision.ShouldTrade,
+                aiDecision.AmountUSDT,
+                aiDecision.Leverage,
+                aiDecision.ConfidenceScore,
+                aiDecision.Reasoning,
+                aiDecision.ParseSuccess,
+                aiDecision.ParseError,
+                signal.Decision,
+                signal.MarginAmountUSDT,
+                signal.Reason
+            },
+            signal.Decision == "TRADE" ? "warning" : "info");
 
         TradeResult? result = null;
         if (string.Equals(signal.Decision, "TRADE", StringComparison.OrdinalIgnoreCase))
         {
             result = await _okxService.ExecuteTradeAsync(signal);
+            await _liveEvents.PublishAsync(
+                result.Success ? LiveEventTypes.TradeSubmitted : LiveEventTypes.TradeRejected,
+                result.Success
+                    ? $"OKX order submitted for {signal.Symbol}"
+                    : $"OKX order rejected for {signal.Symbol}: {result.ErrorMessage}",
+                whaleAddress,
+                transaction.TxHash,
+                signal.Symbol,
+                signal.MarginAmountUSDT,
+                new
+                {
+                    result.OrderId,
+                    result.Success,
+                    result.ExecutedPrice,
+                    result.ErrorMessage,
+                    signal.Action,
+                    signal.Leverage
+                },
+                result.Success ? "success" : "danger");
+        }
+        else
+        {
+            await _liveEvents.PublishAsync(
+                LiveEventTypes.TradeRejected,
+                $"Trade skipped: {signal.Reason}",
+                whaleAddress,
+                transaction.TxHash,
+                signal.Symbol,
+                transaction.UsdValue,
+                new
+                {
+                    signal.Decision,
+                    signal.Action,
+                    signal.TradeConfidence,
+                    signal.Reason
+                });
         }
 
         await _tradeRepository.SaveTradeLogAsync(new TradeLogEntity

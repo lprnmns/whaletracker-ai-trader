@@ -46,6 +46,8 @@ public class WhaleTrackerDbContext : DbContext
 
     public DbSet<RuntimeControlEntity> RuntimeControls => Set<RuntimeControlEntity>();
 
+    public DbSet<LiveEventEntity> LiveEvents => Set<LiveEventEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -108,6 +110,14 @@ public class WhaleTrackerDbContext : DbContext
             entity.HasIndex(e => e.WalletAddress);
             entity.HasIndex(e => e.CreatedAt);
             entity.HasIndex(e => e.Symbol);
+        });
+
+        modelBuilder.Entity<LiveEventEntity>(entity =>
+        {
+            entity.HasIndex(e => e.CreatedAt);
+            entity.HasIndex(e => e.Type);
+            entity.HasIndex(e => e.WalletAddress);
+            entity.HasIndex(e => e.TxHash);
         });
     }
 }
