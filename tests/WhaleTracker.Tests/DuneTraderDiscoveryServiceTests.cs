@@ -52,9 +52,16 @@ public class DuneTraderDiscoveryServiceTests
         Assert.Contains("l.blockchain = s.blockchain", sql);
         Assert.Contains("l.address = s.wallet", sql);
         Assert.Contains("'cex', 'bridge', 'mev', 'bot'", sql);
-        Assert.DoesNotContain("'dex', 'dao'", sql);
+        Assert.Contains("'contract', 'token_contract', 'oracle'", sql);
+        Assert.DoesNotContain("'dex', 'defi'", sql);
         Assert.Contains("'diagnostics' AS row_kind", sql);
         Assert.Contains("maximum_daily_swaps <= 50", sql);
         Assert.Contains("copyability_score", sql);
+        Assert.Contains("current_copyable_value_usd", sql);
+        Assert.Contains("tokens_ethereum.balances", sql);
+        Assert.Contains("current_copyable_token_whitelist", sql);
+        Assert.Contains("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", sql);
+        Assert.Contains("coalesce(lower(to_hex(b.token_address))", sql);
+        Assert.Contains("current_copyable_value_usd, 0) BETWEEN 100000 AND 100000000", sql);
     }
 }

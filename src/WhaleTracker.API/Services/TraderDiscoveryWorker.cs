@@ -135,6 +135,7 @@ public sealed class TraderDiscoveryWorker : BackgroundService
             MaximumDailySwaps = candidate.MaximumDailySwaps,
             DistinctMajorAssets = candidate.DistinctMajorAssets,
             CopyabilityScore = candidate.CopyabilityScore,
+            CurrentCopyableValueUsd = candidate.CurrentCopyableValueUsd,
             ActiveChainCount = candidate.ActiveChainCount,
             ActiveChainsJson = JsonSerializer.Serialize(candidate.ActiveChains),
             FirstTradeUtc = candidate.FirstTradeUtc,

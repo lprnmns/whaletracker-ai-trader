@@ -344,6 +344,7 @@ static void EnsureTraderDiscoverySchema(WhaleTrackerDbContext db)
             maximum_daily_swaps INTEGER NOT NULL DEFAULT 0,
             distinct_major_assets INTEGER NOT NULL DEFAULT 0,
             copyability_score NUMERIC NOT NULL DEFAULT 0,
+            current_copyable_value_usd NUMERIC NOT NULL DEFAULT 0,
             active_chain_count INTEGER NOT NULL DEFAULT 0,
             active_chains_json TEXT NOT NULL DEFAULT '[]',
             first_trade_utc TIMESTAMPTZ NOT NULL,
@@ -384,6 +385,8 @@ static void EnsureTraderDiscoverySchema(WhaleTrackerDbContext db)
             ADD COLUMN IF NOT EXISTS distinct_major_assets INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE trader_discovery_candidates
             ADD COLUMN IF NOT EXISTS copyability_score NUMERIC NOT NULL DEFAULT 0;
+        ALTER TABLE trader_discovery_candidates
+            ADD COLUMN IF NOT EXISTS current_copyable_value_usd NUMERIC NOT NULL DEFAULT 0;
         """);
 }
 

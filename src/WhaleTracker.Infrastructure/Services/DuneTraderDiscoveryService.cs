@@ -166,7 +166,8 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                       WHERE l.blockchain = s.blockchain
                         AND l.address = s.wallet
                         AND lower(l.category) IN (
-                            'cex', 'bridge', 'mev', 'bot'
+                            'cex', 'bridge', 'mev', 'bot',
+                            'contract', 'token_contract', 'oracle'
                         )
                   )
                   AND NOT EXISTS (
@@ -252,10 +253,90 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                 ORDER BY copyability_score DESC, approved_notional_usd DESC
                 LIMIT {{Math.Min(2500, request.CandidateLimit * 5)}}
             ),
+            current_copyable_token_whitelist(blockchain, token_address_hex) AS (
+                VALUES
+                    ('ethereum', 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'),
+                    ('ethereum', 'c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'),
+                    ('ethereum', '2260fac5e5542a773aa44fbcfedf7c193bc2c599'),
+                    ('ethereum', 'cbb7c0000ab88b473b1f5afd9ef808440eed33bf'),
+                    ('ethereum', '514910771af9ca656af840dff83e8264ecf986ca'),
+                    ('ethereum', 'dac17f958d2ee523a2206206994597c13d831ec7'),
+                    ('ethereum', 'a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'),
+                    ('ethereum', '6b175474e89094c44da98b954eedeac495271d0f'),
+                    ('ethereum', '4c9edd5852cd905f086c759e8383e09bff1e68b3'),
+                    ('arbitrum', 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'),
+                    ('arbitrum', '82af49447d8a07e3bd95bd0d56f35241523fbab1'),
+                    ('arbitrum', '2f2a2543b76a4166549f7aab2e75bef0aefc5b0f'),
+                    ('arbitrum', 'f97f4df75117a78c1a5a0dbb814af92458539fb4'),
+                    ('arbitrum', 'fd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9'),
+                    ('arbitrum', 'af88d065e77c8cc2239327c5edb3a432268e5831'),
+                    ('arbitrum', 'ff970a61a04b1ca14834a43f5de4533ebddb5cc8'),
+                    ('arbitrum', 'da10009cbd5d07dd0cecc66161fc93d7c9000da1'),
+                    ('base', 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'),
+                    ('base', '4200000000000000000000000000000000000006'),
+                    ('base', 'cbb7c0000ab88b473b1f5afd9ef808440eed33bf'),
+                    ('base', '833589fcd6edb6e08f4c7c32d4f71b54bda02913'),
+                    ('optimism', 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'),
+                    ('optimism', '4200000000000000000000000000000000000006'),
+                    ('optimism', '68f180fcce6836688e9084f035309e29bf0a2095'),
+                    ('optimism', '350a791bfc2c21f9ed5d10980dad2e2638ffa7f6'),
+                    ('optimism', '94b008aa00579c1307b0ef2c499ad98a8ce58e58'),
+                    ('optimism', '0b2c639c533813f4aa9d7837caf62653d097ff85'),
+                    ('optimism', '7f5c764cbc14f9669b88837ca1490cca17c31607'),
+                    ('optimism', 'da10009cbd5d07dd0cecc66161fc93d7c9000da1')
+            ),
+            current_copyable_balances AS (
+                SELECT b.address AS wallet, b.blockchain, b.token_symbol, b.token_address, b.balance
+                FROM tokens_ethereum.balances b
+                JOIN prequalified_wallets p ON p.wallet = b.address
+                JOIN current_copyable_token_whitelist w
+                  ON w.blockchain = b.blockchain
+                 AND w.token_address_hex = coalesce(lower(to_hex(b.token_address)), 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee')
+                WHERE b.balance > 0
+                UNION ALL
+                SELECT b.address AS wallet, b.blockchain, b.token_symbol, b.token_address, b.balance
+                FROM tokens_arbitrum.balances b
+                JOIN prequalified_wallets p ON p.wallet = b.address
+                JOIN current_copyable_token_whitelist w
+                  ON w.blockchain = b.blockchain
+                 AND w.token_address_hex = coalesce(lower(to_hex(b.token_address)), 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee')
+                WHERE b.balance > 0
+                UNION ALL
+                SELECT b.address AS wallet, b.blockchain, b.token_symbol, b.token_address, b.balance
+                FROM tokens_base.balances b
+                JOIN prequalified_wallets p ON p.wallet = b.address
+                JOIN current_copyable_token_whitelist w
+                  ON w.blockchain = b.blockchain
+                 AND w.token_address_hex = coalesce(lower(to_hex(b.token_address)), 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee')
+                WHERE b.balance > 0
+                UNION ALL
+                SELECT b.address AS wallet, b.blockchain, b.token_symbol, b.token_address, b.balance
+                FROM tokens_optimism.balances b
+                JOIN prequalified_wallets p ON p.wallet = b.address
+                JOIN current_copyable_token_whitelist w
+                  ON w.blockchain = b.blockchain
+                 AND w.token_address_hex = coalesce(lower(to_hex(b.token_address)), 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee')
+                WHERE b.balance > 0
+            ),
+            current_copyable_values AS (
+                SELECT
+                    b.wallet,
+                    round(sum(b.balance * coalesce(p.price, 0)), 2) AS current_copyable_value_usd
+                FROM current_copyable_balances b
+                LEFT JOIN prices.usd_latest p
+                  ON p.blockchain = b.blockchain
+                 AND coalesce(lower(to_hex(p.contract_address)), 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee')
+                   = coalesce(lower(to_hex(b.token_address)), 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee')
+                GROUP BY b.wallet
+            ),
             selected_candidates AS (
-                SELECT *
-                FROM prequalified_wallets
-                ORDER BY copyability_score DESC, approved_notional_usd DESC
+                SELECT
+                    p.*,
+                    coalesce(v.current_copyable_value_usd, 0) AS current_copyable_value_usd
+                FROM prequalified_wallets p
+                LEFT JOIN current_copyable_values v ON v.wallet = p.wallet
+                WHERE coalesce(v.current_copyable_value_usd, 0) BETWEEN 100000 AND 100000000
+                ORDER BY copyability_score DESC, current_copyable_value_usd DESC, approved_notional_usd DESC
                 LIMIT {{request.CandidateLimit}}
             ),
             diagnostics AS (
@@ -276,6 +357,7 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                 maximum_daily_swaps,
                 distinct_major_assets,
                 copyability_score,
+                current_copyable_value_usd,
                 active_chain_count,
                 active_chains,
                 first_trade_utc,
@@ -297,6 +379,7 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                 cast(null AS bigint) AS maximum_daily_swaps,
                 cast(null AS bigint) AS distinct_major_assets,
                 cast(null AS double) AS copyability_score,
+                cast(null AS double) AS current_copyable_value_usd,
                 cast(null AS bigint) AS active_chain_count,
                 cast(array[] AS array(varchar)) AS active_chains,
                 cast(null AS timestamp) AS first_trade_utc,
@@ -572,6 +655,7 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                 MaximumDailySwaps = GetInt(row, "maximum_daily_swaps"),
                 DistinctMajorAssets = GetInt(row, "distinct_major_assets"),
                 CopyabilityScore = GetDecimal(row, "copyability_score"),
+                CurrentCopyableValueUsd = GetDecimal(row, "current_copyable_value_usd"),
                 ActiveChainCount = GetInt(row, "active_chain_count"),
                 ActiveChains = GetStringArray(row, "active_chains"),
                 FirstTradeUtc = GetDateTime(row, "first_trade_utc"),

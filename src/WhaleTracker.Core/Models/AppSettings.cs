@@ -152,7 +152,7 @@ public class DuneSettings
     public long? QueryId { get; set; }
     public string Performance { get; set; } = string.Empty;
     public int PollIntervalSeconds { get; set; } = 2;
-    public int TimeoutSeconds { get; set; } = 180;
+    public int TimeoutSeconds { get; set; } = 600;
 }
 
 public class AuthSettings

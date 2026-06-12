@@ -406,6 +406,7 @@ public sealed class TraderFinderController : ControllerBase
         item.MaximumDailySwaps,
         item.DistinctMajorAssets,
         item.CopyabilityScore,
+        item.CurrentCopyableValueUsd,
         item.ActiveChainCount,
         activeChains = JsonSerializer.Deserialize<List<string>>(item.ActiveChainsJson) ?? new(),
         item.FirstTradeUtc,

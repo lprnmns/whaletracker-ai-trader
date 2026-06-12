@@ -19,6 +19,7 @@ public sealed class TraderDiscoveryCandidate
     public int MaximumDailySwaps { get; set; }
     public int DistinctMajorAssets { get; set; }
     public decimal CopyabilityScore { get; set; }
+    public decimal CurrentCopyableValueUsd { get; set; }
     public int ActiveChainCount { get; set; }
     public List<string> ActiveChains { get; set; } = new();
     public DateTime FirstTradeUtc { get; set; }

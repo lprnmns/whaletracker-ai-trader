@@ -40,6 +40,9 @@ public class TraderDiscoveryCandidateEntity
     [Column("copyability_score")]
     public decimal CopyabilityScore { get; set; }
 
+    [Column("current_copyable_value_usd")]
+    public decimal CurrentCopyableValueUsd { get; set; }
+
     [Column("active_chain_count")]
     public int ActiveChainCount { get; set; }
 
