@@ -142,7 +142,14 @@ public sealed class TraderDiscoveryWorker : BackgroundService
         run.ProgressPercent = 100;
         run.CurrentStage = "completed";
         run.State = "COMPLETED";
-        run.StatusMessage = $"Discovery completed with {run.CandidateCount} candidates.";
+        var diagnostics = result.Diagnostics;
+        run.StatusMessage =
+            $"Funnel: {diagnostics.RawSwapCount:N0} major swap legs -> " +
+            $"{diagnostics.ApprovedPairSwapCount:N0} approved-pair legs -> " +
+            $"{diagnostics.EligibleTransactionCount:N0} eligible transactions -> " +
+            $"{diagnostics.WalletCount:N0} wallets -> " +
+            $"{diagnostics.ActiveWalletCount:N0} activity-qualified -> " +
+            $"{run.CandidateCount:N0} candidates.";
         AppendLog(run, new TraderDiscoveryProgress
         {
             Percent = 100,

@@ -29,6 +29,16 @@ public sealed class TraderDiscoveryResult
     public DateTime StartedAtUtc { get; set; }
     public DateTime CompletedAtUtc { get; set; }
     public List<TraderDiscoveryCandidate> Candidates { get; set; } = new();
+    public TraderDiscoveryDiagnostics Diagnostics { get; set; } = new();
+}
+
+public sealed class TraderDiscoveryDiagnostics
+{
+    public long RawSwapCount { get; set; }
+    public long ApprovedPairSwapCount { get; set; }
+    public long EligibleTransactionCount { get; set; }
+    public long WalletCount { get; set; }
+    public long ActiveWalletCount { get; set; }
 }
 
 public sealed class TraderDiscoveryProgress

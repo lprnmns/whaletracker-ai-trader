@@ -78,10 +78,12 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                 cancellationToken,
                 executionId);
             var candidates = ParseCandidates(root);
+            var diagnostics = ParseDiagnostics(root);
             _logger.LogInformation(
-                "Dune discovery {ExecutionId} completed with {CandidateCount} candidates.",
+                "Dune discovery {ExecutionId} completed with {CandidateCount} candidates from {ActiveWalletCount} active wallets.",
                 executionId,
-                candidates.Count);
+                candidates.Count,
+                diagnostics.ActiveWalletCount);
 
             return new TraderDiscoveryResult
             {
@@ -89,7 +91,8 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                 State = state,
                 StartedAtUtc = startedAt,
                 CompletedAtUtc = DateTime.UtcNow,
-                Candidates = candidates
+                Candidates = candidates,
+                Diagnostics = diagnostics
             };
         }
     }
@@ -110,40 +113,66 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
         var minimumSwapUsd = request.MinimumSwapUsd.ToString("0.########", CultureInfo.InvariantCulture);
 
         return $$"""
-            WITH transaction_swaps AS (
+            WITH raw_major_swaps AS (
+                SELECT
+                    t.blockchain,
+                    t.tx_hash,
+                    t.tx_from AS wallet,
+                    t.block_time,
+                    t.amount_usd,
+                    upper(coalesce(t.token_bought_symbol, '')) AS bought_symbol,
+                    upper(coalesce(t.token_sold_symbol, '')) AS sold_symbol
+                FROM dex.trades t
+                WHERE t.block_date >= current_date - interval '{{request.LookbackDays}}' day
+                  AND t.block_time >= now() - interval '{{request.LookbackDays}}' day
+                  AND t.blockchain IN ('ethereum', 'arbitrum', 'base', 'optimism')
+                  AND t.tx_from IS NOT NULL
+                  AND t.amount_usd >= {{minimumSwapUsd}}
+                  AND (
+                      upper(coalesce(t.token_bought_symbol, '')) IN (
+                          'BTC', 'WBTC', 'CBBTC', 'ETH', 'WETH', 'SOL', 'LINK', 'AVAX'
+                      )
+                      OR upper(coalesce(t.token_sold_symbol, '')) IN (
+                          'BTC', 'WBTC', 'CBBTC', 'ETH', 'WETH', 'SOL', 'LINK', 'AVAX'
+                      )
+                  )
+            ),
+            approved_pair_swaps AS (
+                SELECT *
+                FROM raw_major_swaps
+                WHERE bought_symbol IN (
+                        'BTC', 'WBTC', 'CBBTC', 'ETH', 'WETH', 'SOL', 'LINK', 'AVAX',
+                        'USDT', 'USDC', 'DAI', 'USDE'
+                    )
+                  AND sold_symbol IN (
+                        'BTC', 'WBTC', 'CBBTC', 'ETH', 'WETH', 'SOL', 'LINK', 'AVAX',
+                        'USDT', 'USDC', 'DAI', 'USDE'
+                    )
+            ),
+            eligible_swap_legs AS (
+                SELECT s.*
+                FROM approved_pair_swaps s
+                WHERE NOT EXISTS (
+                      SELECT 1
+                      FROM labels.addresses l
+                      WHERE l.blockchain = s.blockchain
+                        AND l.address = s.wallet
+                        AND lower(l.category) IN (
+                            'cex', 'bridge', 'mev', 'bot'
+                        )
+                  )
+            ),
+            transaction_swaps AS (
                 SELECT
                     blockchain,
                     tx_hash,
-                    tx_from AS wallet,
+                    wallet,
                     min(block_time) AS block_time,
                     max(amount_usd) AS amount_usd
-                FROM dex.trades
-                WHERE block_date >= current_date - interval '{{request.LookbackDays}}' day
-                  AND block_time >= now() - interval '{{request.LookbackDays}}' day
-                  AND blockchain IN ('ethereum', 'arbitrum', 'base', 'optimism')
-                  AND tx_from IS NOT NULL
-                  AND amount_usd >= {{minimumSwapUsd}}
-                  AND (
-                      upper(coalesce(token_bought_symbol, '')) IN (
-                          'BTC', 'WBTC', 'CBBTC', 'ETH', 'WETH', 'SOL', 'LINK', 'AVAX'
-                      )
-                      OR upper(coalesce(token_sold_symbol, '')) IN (
-                          'BTC', 'WBTC', 'CBBTC', 'ETH', 'WETH', 'SOL', 'LINK', 'AVAX'
-                      )
-                  )
-                  AND (
-                    upper(coalesce(token_bought_symbol, '')) IN (
-                        'BTC', 'WBTC', 'CBBTC', 'ETH', 'WETH', 'SOL', 'LINK', 'AVAX',
-                        'USDT', 'USDC', 'DAI', 'USDE'
-                    )
-                    AND upper(coalesce(token_sold_symbol, '')) IN (
-                        'BTC', 'WBTC', 'CBBTC', 'ETH', 'WETH', 'SOL', 'LINK', 'AVAX',
-                        'USDT', 'USDC', 'DAI', 'USDE'
-                    )
-                  )
-                GROUP BY blockchain, tx_hash, tx_from
+                FROM eligible_swap_legs
+                GROUP BY blockchain, tx_hash, wallet
             ),
-            prequalified_wallets AS (
+            activity_qualified_wallets AS (
                 SELECT
                     wallet,
                     count(*) AS meaningful_swap_count,
@@ -157,22 +186,29 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                 GROUP BY wallet
                 HAVING count(*) >= {{request.MinimumMeaningfulSwaps}}
                    AND count(DISTINCT date_trunc('week', block_time)) >= {{request.MinimumActiveWeeks}}
+            ),
+            prequalified_wallets AS (
+                SELECT *
+                FROM activity_qualified_wallets
                 ORDER BY approved_notional_usd DESC
                 LIMIT {{Math.Min(2500, request.CandidateLimit * 5)}}
             ),
-            eligible_wallets AS (
-                SELECT p.*
-                FROM prequalified_wallets p
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM labels.addresses l
-                    WHERE l.address = p.wallet
-                      AND lower(l.category) IN (
-                          'cex', 'bridge', 'dex', 'dao', 'mev', 'contract', 'bot'
-                      )
-                )
+            selected_candidates AS (
+                SELECT *
+                FROM prequalified_wallets
+                ORDER BY approved_notional_usd DESC
+                LIMIT {{request.CandidateLimit}}
+            ),
+            diagnostics AS (
+                SELECT
+                    (SELECT count(*) FROM raw_major_swaps) AS raw_swap_count,
+                    (SELECT count(*) FROM approved_pair_swaps) AS approved_pair_swap_count,
+                    (SELECT count(DISTINCT concat(blockchain, ':', to_hex(tx_hash))) FROM eligible_swap_legs) AS eligible_transaction_count,
+                    (SELECT count(DISTINCT wallet) FROM transaction_swaps) AS wallet_count,
+                    (SELECT count(*) FROM activity_qualified_wallets) AS active_wallet_count
             )
             SELECT
+                'candidate' AS row_kind,
                 concat('0x', lower(to_hex(wallet))) AS wallet_address,
                 meaningful_swap_count,
                 active_week_count,
@@ -180,10 +216,30 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                 active_chain_count,
                 active_chains,
                 first_trade_utc,
-                last_trade_utc
-            FROM eligible_wallets
-            ORDER BY approved_notional_usd DESC
-            LIMIT {{request.CandidateLimit}}
+                last_trade_utc,
+                cast(null AS bigint) AS raw_swap_count,
+                cast(null AS bigint) AS approved_pair_swap_count,
+                cast(null AS bigint) AS eligible_transaction_count,
+                cast(null AS bigint) AS wallet_count,
+                cast(null AS bigint) AS active_wallet_count
+            FROM selected_candidates
+            UNION ALL
+            SELECT
+                'diagnostics' AS row_kind,
+                cast(null AS varchar) AS wallet_address,
+                cast(null AS bigint) AS meaningful_swap_count,
+                cast(null AS bigint) AS active_week_count,
+                cast(null AS double) AS approved_notional_usd,
+                cast(null AS bigint) AS active_chain_count,
+                cast(array[] AS array(varchar)) AS active_chains,
+                cast(null AS timestamp) AS first_trade_utc,
+                cast(null AS timestamp) AS last_trade_utc,
+                raw_swap_count,
+                approved_pair_swap_count,
+                eligible_transaction_count,
+                wallet_count,
+                active_wallet_count
+            FROM diagnostics
             """;
     }
 
@@ -454,6 +510,32 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
             .ToList();
     }
 
+    private static TraderDiscoveryDiagnostics ParseDiagnostics(JsonElement root)
+    {
+        if (!root.TryGetProperty("result", out var result) ||
+            !result.TryGetProperty("rows", out var rows) ||
+            rows.ValueKind != JsonValueKind.Array)
+        {
+            return new TraderDiscoveryDiagnostics();
+        }
+
+        var row = rows.EnumerateArray().FirstOrDefault(item =>
+            GetString(item, "row_kind").Equals("diagnostics", StringComparison.OrdinalIgnoreCase));
+        if (row.ValueKind == JsonValueKind.Undefined)
+        {
+            return new TraderDiscoveryDiagnostics();
+        }
+
+        return new TraderDiscoveryDiagnostics
+        {
+            RawSwapCount = GetLong(row, "raw_swap_count"),
+            ApprovedPairSwapCount = GetLong(row, "approved_pair_swap_count"),
+            EligibleTransactionCount = GetLong(row, "eligible_transaction_count"),
+            WalletCount = GetLong(row, "wallet_count"),
+            ActiveWalletCount = GetLong(row, "active_wallet_count")
+        };
+    }
+
     private static void NormalizeRequest(TraderDiscoveryRequest request)
     {
         request.LookbackDays = Math.Clamp(request.LookbackDays, 7, 180);
@@ -490,6 +572,12 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
     private static int GetInt(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) &&
         int.TryParse(value.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : 0;
+
+    private static long GetLong(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) &&
+        long.TryParse(value.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed)
             ? parsed
             : 0;
 

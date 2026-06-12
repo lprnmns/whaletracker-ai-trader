@@ -12,7 +12,7 @@ public class DuneTraderDiscoveryServiceTests
         var sql = DuneTraderDiscoveryService.BuildDiscoverySql(new TraderDiscoveryRequest());
 
         Assert.Contains("FROM dex.trades", sql);
-        Assert.Contains("GROUP BY blockchain, tx_hash, tx_from", sql);
+        Assert.Contains("GROUP BY blockchain, tx_hash, wallet", sql);
         Assert.Contains("max(amount_usd)", sql);
         Assert.DoesNotContain("dex_aggregator.trades", sql);
     }
@@ -48,5 +48,10 @@ public class DuneTraderDiscoveryServiceTests
         Assert.Contains("'BTC', 'WBTC', 'CBBTC', 'ETH', 'WETH', 'SOL', 'LINK', 'AVAX'", sql);
         Assert.Contains("'USDT', 'USDC', 'DAI', 'USDE'", sql);
         Assert.Contains("FROM labels.addresses", sql);
+        Assert.Contains("l.blockchain = s.blockchain", sql);
+        Assert.Contains("l.address = s.wallet", sql);
+        Assert.Contains("'cex', 'bridge', 'mev', 'bot'", sql);
+        Assert.DoesNotContain("'dex', 'dao'", sql);
+        Assert.Contains("'diagnostics' AS row_kind", sql);
     }
 }
