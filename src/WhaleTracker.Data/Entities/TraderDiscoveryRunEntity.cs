@@ -40,6 +40,22 @@ public class TraderDiscoveryRunEntity
     [Column("candidate_count")]
     public int CandidateCount { get; set; }
 
+    [Column("progress_percent")]
+    public int ProgressPercent { get; set; }
+
+    [Column("current_stage")]
+    [MaxLength(80)]
+    public string CurrentStage { get; set; } = "queued";
+
+    [Column("status_message")]
+    public string StatusMessage { get; set; } = string.Empty;
+
+    [Column("error_message")]
+    public string ErrorMessage { get; set; } = string.Empty;
+
+    [Column("progress_log_json")]
+    public string ProgressLogJson { get; set; } = "[]";
+
     [Column("started_at_utc")]
     public DateTime StartedAtUtc { get; set; }
 

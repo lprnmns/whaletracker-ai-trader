@@ -36,17 +36,27 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
 
     public async Task<TraderDiscoveryResult> DiscoverAsync(
         TraderDiscoveryRequest request,
+        Func<TraderDiscoveryProgress, CancellationToken, Task>? progress = null,
         CancellationToken cancellationToken = default)
     {
         EnsureConfigured();
         NormalizeRequest(request);
 
         var startedAt = DateTime.UtcNow;
+        await ReportAsync(progress, 5, "preparing_sql", "PREPARING", "Dune SQL and filters are being prepared.", cancellationToken);
         var executionId = _settings.QueryId.HasValue
             ? await ExecuteSavedQueryAsync(_settings.QueryId.Value, request, cancellationToken)
             : await ExecuteSqlAsync(BuildDiscoverySql(request), cancellationToken);
+        await ReportAsync(
+            progress,
+            15,
+            "submitted",
+            "QUERY_STATE_PENDING",
+            $"Query submitted to Dune. Execution: {executionId}",
+            cancellationToken,
+            executionId);
 
-        var resultDocument = await WaitForResultAsync(executionId, cancellationToken);
+        var resultDocument = await WaitForResultAsync(executionId, progress, cancellationToken);
         using (resultDocument)
         {
             var root = resultDocument.RootElement;
@@ -58,6 +68,14 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                     $"Dune execution {executionId} ended as {state}: {error}");
             }
 
+            await ReportAsync(
+                progress,
+                85,
+                "parsing_results",
+                state,
+                "Dune completed. Candidate rows are being validated.",
+                cancellationToken,
+                executionId);
             var candidates = ParseCandidates(root);
             _logger.LogInformation(
                 "Dune discovery {ExecutionId} completed with {CandidateCount} candidates.",
@@ -221,11 +239,15 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
 
     private async Task<JsonDocument> WaitForResultAsync(
         string executionId,
+        Func<TraderDiscoveryProgress, CancellationToken, Task>? progress,
         CancellationToken cancellationToken)
     {
         var deadline = DateTime.UtcNow.AddSeconds(Math.Clamp(_settings.TimeoutSeconds, 10, 900));
         var pollInterval = TimeSpan.FromSeconds(Math.Clamp(_settings.PollIntervalSeconds, 1, 30));
 
+        var lastState = string.Empty;
+        var pollCount = 0;
+        var lastReportedPercent = 15;
         while (DateTime.UtcNow < deadline)
         {
             using var response = await _httpClient.GetAsync(
@@ -240,6 +262,27 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
 
             var document = JsonDocument.Parse(body);
             var state = GetString(document.RootElement, "state");
+            pollCount++;
+            if (!state.Equals(lastState, StringComparison.OrdinalIgnoreCase) || pollCount % 5 == 0)
+            {
+                var elapsed = DateTime.UtcNow - (deadline.AddSeconds(-Math.Clamp(_settings.TimeoutSeconds, 10, 900)));
+                var percent = state.Equals("QUERY_STATE_COMPLETED", StringComparison.OrdinalIgnoreCase)
+                    ? 80
+                    : state.Equals("QUERY_STATE_EXECUTING", StringComparison.OrdinalIgnoreCase)
+                        ? Math.Min(78, 25 + pollCount * 2)
+                        : Math.Min(35, 15 + pollCount);
+                percent = Math.Max(lastReportedPercent, percent);
+                await ReportAsync(
+                    progress,
+                    percent,
+                    "dune_execution",
+                    state,
+                    $"Dune is {state.Replace("QUERY_STATE_", string.Empty).ToLowerInvariant()} ({elapsed.TotalSeconds:F0}s elapsed).",
+                    cancellationToken,
+                    executionId);
+                lastReportedPercent = percent;
+                lastState = state;
+            }
             if (TerminalStates.Contains(state))
             {
                 return document;
@@ -267,6 +310,24 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
 
         throw new TimeoutException($"Dune execution {executionId} did not finish before timeout.");
     }
+
+    private static Task ReportAsync(
+        Func<TraderDiscoveryProgress, CancellationToken, Task>? progress,
+        int percent,
+        string stage,
+        string state,
+        string message,
+        CancellationToken cancellationToken,
+        string executionId = "") =>
+        progress?.Invoke(new TraderDiscoveryProgress
+        {
+            Percent = Math.Clamp(percent, 0, 100),
+            Stage = stage,
+            State = state,
+            Message = message,
+            ExecutionId = executionId,
+            TimestampUtc = DateTime.UtcNow
+        }, cancellationToken) ?? Task.CompletedTask;
 
     private static List<TraderDiscoveryCandidate> ParseCandidates(JsonElement root)
     {

@@ -361,6 +361,106 @@ input {
   background: rgba(14, 165, 233, 0.22);
 }
 
+.discovery-progress {
+  display: grid;
+  gap: 8px;
+  margin: 2px 0 12px;
+  padding: 10px;
+  border: 1px solid #28445d;
+  border-radius: 6px;
+  background: #061221;
+}
+
+.discovery-progress.failed {
+  border-color: #7f1d1d;
+  background: #1a0b12;
+}
+
+.progress-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-transform: capitalize;
+}
+
+.progress-summary strong {
+  color: #dff8ff;
+  font-size: 12px;
+}
+
+.progress-summary span {
+  color: #67e8f9;
+  font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #111d2d;
+}
+
+.progress-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #22d3ee;
+  transition: width 300ms ease;
+}
+
+.discovery-progress.failed .progress-track > span {
+  background: #ef4444;
+}
+
+.discovery-progress > p,
+.discovery-progress > small {
+  margin: 0;
+  color: #9fb4ca;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.progress-log {
+  max-height: 170px;
+  overflow: auto;
+  border-top: 1px solid #1d3044;
+  padding-top: 6px;
+}
+
+.progress-log > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 2px 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.09);
+}
+
+.progress-log time {
+  color: #607891;
+  font-size: 10px;
+}
+
+.progress-log span {
+  color: #7dd3fc;
+  font-size: 10px;
+  text-transform: capitalize;
+}
+
+.progress-log p {
+  grid-column: 2;
+  margin: 0;
+  color: #9fb4ca;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.progress-log .error span,
+.progress-log .error p {
+  color: #fca5a5;
+}
+
 .candidate-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 36px;

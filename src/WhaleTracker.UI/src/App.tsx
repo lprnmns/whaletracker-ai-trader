@@ -80,6 +80,12 @@ type TraderScan = {
   requestedTop: number
   evaluatedWalletCount: number
   qualifiedWalletCount: number
+  state: string
+  progressPercent: number
+  currentStage: string
+  statusMessage: string
+  errorMessage: string
+  progressLog: TraderDiscoveryProgress[]
   createdAt: string
 }
 
@@ -112,9 +118,23 @@ type TraderDiscoveryRun = {
   minimumSwapUsd: number
   candidateLimit: number
   candidateCount: number
+  progressPercent: number
+  currentStage: string
+  statusMessage: string
+  errorMessage: string
+  progressLog: TraderDiscoveryProgress[]
   startedAtUtc: string
   completedAtUtc: string
   createdAt: string
+}
+
+type TraderDiscoveryProgress = {
+  percent: number
+  stage: string
+  state: string
+  message: string
+  executionId: string
+  timestampUtc: string
 }
 
 type TraderDiscoveryCandidate = {
@@ -384,8 +404,10 @@ function App() {
   const [operations, setOperations] = useState<OperationsSnapshot | null>(null)
   const [traderScans, setTraderScans] = useState<TraderScan[]>([])
   const [traderCandidates, setTraderCandidates] = useState<TraderCandidate[]>([])
+  const [activeTraderScan, setActiveTraderScan] = useState<TraderScan | null>(null)
   const [discoveryRuns, setDiscoveryRuns] = useState<TraderDiscoveryRun[]>([])
   const [discoveryCandidates, setDiscoveryCandidates] = useState<TraderDiscoveryCandidate[]>([])
+  const [activeDiscoveryRun, setActiveDiscoveryRun] = useState<TraderDiscoveryRun | null>(null)
   const [isDiscoveryRunning, setIsDiscoveryRunning] = useState(false)
   const [isTraderScanRunning, setIsTraderScanRunning] = useState(false)
   const [selected, setSelected] = useState<GraphNode | null>(null)
@@ -528,6 +550,16 @@ function App() {
         size: 5,
         event,
       })
+    })
+
+    connection.on('traderDiscoveryProgress', (run: TraderDiscoveryRun) => {
+      setActiveDiscoveryRun(run)
+      setDiscoveryRuns((current) => [run, ...current.filter((item) => item.id !== run.id)].slice(0, 10))
+    })
+
+    connection.on('traderPerformanceProgress', (scan: TraderScan) => {
+      setActiveTraderScan(scan)
+      setTraderScans((current) => [scan, ...current.filter((item) => item.id !== scan.id)].slice(0, 10))
     })
 
     connection.onreconnecting(() => setConnectionState('reconnecting'))
@@ -801,11 +833,7 @@ function App() {
         .split(/[\s,;]+/)
         .map((value) => value.trim())
         .filter(Boolean)
-      const result = await fetchJson<{
-        scanId: number
-        candidates: TraderCandidate[]
-        failures: Array<{ walletAddress: string; error: string }>
-      }>('/api/trader-finder/scan', {
+      const scan = await fetchJson<TraderScan>('/api/trader-finder/scan', {
         method: 'POST',
         body: JSON.stringify({
           startUtc: new Date(traderForm.startUtc).toISOString(),
@@ -816,14 +844,11 @@ function App() {
           candidateWallets,
         }),
       })
-      setTraderCandidates(result.candidates)
+      setActiveTraderScan(scan)
+      setTraderCandidates([])
       await loadMissionState()
-      setAlert(result.failures.length > 0
-        ? `${result.failures.length} wallet provider rate limit veya veri eksigi nedeniyle analiz edilemedi.`
-        : '')
     } catch (error) {
       setAlert(error instanceof Error ? error.message : 'Trader scan failed')
-    } finally {
       setIsTraderScanRunning(false)
     }
   }
@@ -832,32 +857,25 @@ function App() {
     if (isDiscoveryRunning) return
     setIsDiscoveryRunning(true)
     try {
-      const result = await fetchJson<{
-        runId: number
-        candidateCount: number
-        candidates: TraderDiscoveryCandidate[]
-      }>('/api/trader-finder/discover', {
+      const run = await fetchJson<TraderDiscoveryRun>('/api/trader-finder/discover', {
         method: 'POST',
         body: JSON.stringify(discoveryForm),
       })
-      setDiscoveryCandidates(result.candidates)
-      setTraderForm((current) => ({
-        ...current,
-        candidateWallets: result.candidates.map((candidate) => candidate.walletAddress).join('\n'),
-      }))
+      setActiveDiscoveryRun(run)
+      setDiscoveryCandidates([])
       await loadMissionState()
-      setAlert(result.candidateCount === 0 ? 'Dune scan completed, but no wallet matched these filters.' : '')
     } catch (error) {
       setAlert(error instanceof Error ? error.message : 'Dune discovery failed')
-    } finally {
       setIsDiscoveryRunning(false)
     }
   }
 
   const loadDiscoveryCandidates = async (runId: number) => {
+    const run = await fetchJson<TraderDiscoveryRun>(`/api/trader-finder/discovery-runs/${runId}`)
     const rows = await fetchJson<TraderDiscoveryCandidate[]>(
       `/api/trader-finder/discovery-runs/${runId}/candidates`,
     )
+    setActiveDiscoveryRun(run)
     setDiscoveryCandidates(rows)
     setTraderForm((current) => ({
       ...current,
@@ -865,10 +883,67 @@ function App() {
     }))
   }
 
+  useEffect(() => {
+    if (!activeDiscoveryRun ||
+        activeDiscoveryRun.state === 'COMPLETED' ||
+        activeDiscoveryRun.state === 'FAILED') {
+      setIsDiscoveryRunning(false)
+      return
+    }
+
+    setIsDiscoveryRunning(true)
+    const timer = window.setInterval(async () => {
+      try {
+        const run = await fetchJson<TraderDiscoveryRun>(
+          `/api/trader-finder/discovery-runs/${activeDiscoveryRun.id}`,
+        )
+        setActiveDiscoveryRun(run)
+        setDiscoveryRuns((current) => [run, ...current.filter((item) => item.id !== run.id)].slice(0, 10))
+        if (run.state === 'COMPLETED') {
+          await loadDiscoveryCandidates(run.id)
+          setAlert(run.candidateCount === 0 ? 'Dune scan completed, but no wallet matched these filters.' : '')
+        } else if (run.state === 'FAILED') {
+          setAlert(run.errorMessage || 'Dune discovery failed')
+        }
+      } catch (error) {
+        setAlert(error instanceof Error ? error.message : 'Discovery progress unavailable')
+      }
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [activeDiscoveryRun?.id, activeDiscoveryRun?.state])
+
   const loadTraderCandidates = async (scanId: number) => {
+    const scan = await fetchJson<TraderScan>(`/api/trader-finder/scans/${scanId}`)
     const rows = await fetchJson<TraderCandidate[]>(`/api/trader-finder/scans/${scanId}/candidates`)
+    setActiveTraderScan(scan)
     setTraderCandidates(rows)
   }
+
+  useEffect(() => {
+    if (!activeTraderScan ||
+        activeTraderScan.state === 'COMPLETED' ||
+        activeTraderScan.state === 'FAILED') {
+      setIsTraderScanRunning(false)
+      return
+    }
+
+    setIsTraderScanRunning(true)
+    const timer = window.setInterval(async () => {
+      try {
+        const scan = await fetchJson<TraderScan>(`/api/trader-finder/scans/${activeTraderScan.id}`)
+        setActiveTraderScan(scan)
+        setTraderScans((current) => [scan, ...current.filter((item) => item.id !== scan.id)].slice(0, 10))
+        if (scan.state === 'COMPLETED') {
+          await loadTraderCandidates(scan.id)
+        } else if (scan.state === 'FAILED') {
+          setAlert(scan.errorMessage || 'Performance verification failed')
+        }
+      } catch (error) {
+        setAlert(error instanceof Error ? error.message : 'Performance progress unavailable')
+      }
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [activeTraderScan?.id, activeTraderScan?.state])
 
   const trackTraderCandidate = async (candidate: TraderCandidate) => {
     await fetchJson(`/api/trader-finder/candidates/${candidate.id}/track`, { method: 'POST' })
@@ -1067,10 +1142,38 @@ function App() {
               <button className="primary-action" disabled={isDiscoveryRunning} onClick={runTraderDiscovery}>
                 <Database size={16} /> {isDiscoveryRunning ? 'Scanning Dune...' : 'Discover active traders'}
               </button>
+              {activeDiscoveryRun && (
+                <div className={`discovery-progress ${activeDiscoveryRun.state === 'FAILED' ? 'failed' : ''}`}>
+                  <div className="progress-summary">
+                    <strong>{activeDiscoveryRun.currentStage.replaceAll('_', ' ')}</strong>
+                    <span>{activeDiscoveryRun.progressPercent}%</span>
+                  </div>
+                  <div
+                    className="progress-track"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={activeDiscoveryRun.progressPercent}
+                  >
+                    <span style={{ width: `${activeDiscoveryRun.progressPercent}%` }} />
+                  </div>
+                  <p>{activeDiscoveryRun.errorMessage || activeDiscoveryRun.statusMessage}</p>
+                  {activeDiscoveryRun.executionId && <small>Dune execution: {activeDiscoveryRun.executionId}</small>}
+                  <div className="progress-log">
+                    {[...(activeDiscoveryRun.progressLog || [])].reverse().map((entry, index) => (
+                      <div key={`${entry.timestampUtc}-${index}`} className={entry.state === 'FAILED' ? 'error' : ''}>
+                        <time>{formatTime(entry.timestampUtc)}</time>
+                        <span>{entry.stage.replaceAll('_', ' ')}</span>
+                        <p>{entry.message}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className="scan-list">
                 {discoveryRuns.map((run) => (
                   <button key={run.id} onClick={() => loadDiscoveryCandidates(run.id)}>
-                    Discovery #{run.id} · {run.candidateCount} candidates · {run.lookbackDays}d · {formatTime(run.createdAt)}
+                    Discovery #{run.id} · {run.progressPercent}% · {run.state} · {run.candidateCount} candidates
                   </button>
                 ))}
               </div>
@@ -1108,10 +1211,40 @@ function App() {
               <button className="primary-action" disabled={isTraderScanRunning} onClick={runTraderScan}>
                 <Database size={16} /> {isTraderScanRunning ? 'Analyzing wallets...' : 'Find top traders'}
               </button>
+              {activeTraderScan && (
+                <div className={`discovery-progress ${activeTraderScan.state === 'FAILED' ? 'failed' : ''}`}>
+                  <div className="progress-summary">
+                    <strong>{activeTraderScan.currentStage.replaceAll('_', ' ')}</strong>
+                    <span>{activeTraderScan.progressPercent}%</span>
+                  </div>
+                  <div
+                    className="progress-track"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={activeTraderScan.progressPercent}
+                  >
+                    <span style={{ width: `${activeTraderScan.progressPercent}%` }} />
+                  </div>
+                  <p>{activeTraderScan.errorMessage || activeTraderScan.statusMessage}</p>
+                  <small>
+                    Evaluated {activeTraderScan.evaluatedWalletCount} · qualified {activeTraderScan.qualifiedWalletCount}
+                  </small>
+                  <div className="progress-log">
+                    {[...(activeTraderScan.progressLog || [])].reverse().map((entry, index) => (
+                      <div key={`${entry.timestampUtc}-${index}`} className={entry.stage === 'wallet_failed' || entry.state === 'FAILED' ? 'error' : ''}>
+                        <time>{formatTime(entry.timestampUtc)}</time>
+                        <span>{entry.stage.replaceAll('_', ' ')}</span>
+                        <p>{entry.message}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className="scan-list">
                 {traderScans.map((scan) => (
                   <button key={scan.id} onClick={() => loadTraderCandidates(scan.id)}>
-                    Scan #{scan.id} · {scan.qualifiedWalletCount}/{scan.evaluatedWalletCount} qualified · {formatTime(scan.createdAt)}
+                    Scan #{scan.id} · {scan.progressPercent}% · {scan.state} · {scan.qualifiedWalletCount}/{scan.evaluatedWalletCount}
                   </button>
                 ))}
               </div>

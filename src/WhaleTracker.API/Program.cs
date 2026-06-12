@@ -53,7 +53,11 @@ builder.Services.AddScoped<IWhaleTrackerService, WhaleTrackerService>();
 builder.Services.AddScoped<IInsiderDetectionService, InsiderDetectionService>();
 builder.Services.AddScoped<IAiBiasMemoryService, AiBiasMemoryService>();
 builder.Services.AddScoped<ILiveEventPublisher, SignalRLiveEventPublisher>();
+builder.Services.AddSingleton<ITraderDiscoveryJobQueue, TraderDiscoveryJobQueue>();
+builder.Services.AddSingleton<ITraderPerformanceJobQueue, TraderPerformanceJobQueue>();
 builder.Services.AddHostedService<AutoTraderWorker>();
+builder.Services.AddHostedService<TraderDiscoveryWorker>();
+builder.Services.AddHostedService<TraderPerformanceWorker>();
 
 // ================================================================
 // AUTH (Cookie)
@@ -240,6 +244,13 @@ static void EnsureTraderFinderSchema(WhaleTrackerDbContext db)
             requested_top INTEGER NOT NULL DEFAULT 10,
             evaluated_wallet_count INTEGER NOT NULL DEFAULT 0,
             qualified_wallet_count INTEGER NOT NULL DEFAULT 0,
+            state VARCHAR(40) NOT NULL DEFAULT 'QUEUED',
+            progress_percent INTEGER NOT NULL DEFAULT 0,
+            current_stage VARCHAR(80) NOT NULL DEFAULT 'queued',
+            status_message TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT '',
+            candidate_wallets_json TEXT NOT NULL DEFAULT '[]',
+            progress_log_json TEXT NOT NULL DEFAULT '[]',
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
 
@@ -273,6 +284,21 @@ static void EnsureTraderFinderSchema(WhaleTrackerDbContext db)
 
         CREATE INDEX IF NOT EXISTS ix_trader_candidates_adjusted_profit
         ON trader_candidates (adjusted_profit_usd);
+
+        ALTER TABLE trader_scans
+            ADD COLUMN IF NOT EXISTS state VARCHAR(40) NOT NULL DEFAULT 'COMPLETED';
+        ALTER TABLE trader_scans
+            ADD COLUMN IF NOT EXISTS progress_percent INTEGER NOT NULL DEFAULT 100;
+        ALTER TABLE trader_scans
+            ADD COLUMN IF NOT EXISTS current_stage VARCHAR(80) NOT NULL DEFAULT 'completed';
+        ALTER TABLE trader_scans
+            ADD COLUMN IF NOT EXISTS status_message TEXT NOT NULL DEFAULT '';
+        ALTER TABLE trader_scans
+            ADD COLUMN IF NOT EXISTS error_message TEXT NOT NULL DEFAULT '';
+        ALTER TABLE trader_scans
+            ADD COLUMN IF NOT EXISTS candidate_wallets_json TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE trader_scans
+            ADD COLUMN IF NOT EXISTS progress_log_json TEXT NOT NULL DEFAULT '[]';
         """);
 }
 
@@ -290,6 +316,11 @@ static void EnsureTraderDiscoverySchema(WhaleTrackerDbContext db)
             minimum_swap_usd NUMERIC NOT NULL DEFAULT 1500,
             candidate_limit INTEGER NOT NULL DEFAULT 200,
             candidate_count INTEGER NOT NULL DEFAULT 0,
+            progress_percent INTEGER NOT NULL DEFAULT 0,
+            current_stage VARCHAR(80) NOT NULL DEFAULT 'queued',
+            status_message TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT '',
+            progress_log_json TEXT NOT NULL DEFAULT '[]',
             started_at_utc TIMESTAMPTZ NOT NULL,
             completed_at_utc TIMESTAMPTZ NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -324,6 +355,17 @@ static void EnsureTraderDiscoverySchema(WhaleTrackerDbContext db)
 
         CREATE UNIQUE INDEX IF NOT EXISTS ux_trader_discovery_candidates_run_wallet
         ON trader_discovery_candidates (trader_discovery_run_id, wallet_address);
+
+        ALTER TABLE trader_discovery_runs
+            ADD COLUMN IF NOT EXISTS progress_percent INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE trader_discovery_runs
+            ADD COLUMN IF NOT EXISTS current_stage VARCHAR(80) NOT NULL DEFAULT 'queued';
+        ALTER TABLE trader_discovery_runs
+            ADD COLUMN IF NOT EXISTS status_message TEXT NOT NULL DEFAULT '';
+        ALTER TABLE trader_discovery_runs
+            ADD COLUMN IF NOT EXISTS error_message TEXT NOT NULL DEFAULT '';
+        ALTER TABLE trader_discovery_runs
+            ADD COLUMN IF NOT EXISTS progress_log_json TEXT NOT NULL DEFAULT '[]';
         """);
 }
 

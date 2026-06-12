@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using WhaleTracker.API.Services;
 using WhaleTracker.Core.Interfaces;
 using WhaleTracker.Core.Models;
 using WhaleTracker.Data;
@@ -14,17 +15,17 @@ namespace WhaleTracker.API.Controllers;
 [Route("api/trader-finder")]
 public sealed class TraderFinderController : ControllerBase
 {
-    private readonly ITraderPerformanceService _performanceService;
-    private readonly ITraderDiscoveryService _discoveryService;
+    private readonly ITraderDiscoveryJobQueue _discoveryQueue;
+    private readonly ITraderPerformanceJobQueue _performanceQueue;
     private readonly WhaleTrackerDbContext _db;
 
     public TraderFinderController(
-        ITraderPerformanceService performanceService,
-        ITraderDiscoveryService discoveryService,
+        ITraderDiscoveryJobQueue discoveryQueue,
+        ITraderPerformanceJobQueue performanceQueue,
         WhaleTrackerDbContext db)
     {
-        _performanceService = performanceService;
-        _discoveryService = discoveryService;
+        _discoveryQueue = discoveryQueue;
+        _performanceQueue = performanceQueue;
         _db = db;
     }
 
@@ -33,60 +34,46 @@ public sealed class TraderFinderController : ControllerBase
         [FromBody] TraderDiscoveryRequest request,
         CancellationToken cancellationToken)
     {
-        TraderDiscoveryResult result;
-        try
-        {
-            result = await _discoveryService.DiscoverAsync(request, cancellationToken);
-        }
-        catch (TimeoutException ex)
-        {
-            return StatusCode(StatusCodes.Status504GatewayTimeout, new { error = ex.Message });
-        }
-        catch (HttpRequestException ex)
-        {
-            return StatusCode(StatusCodes.Status502BadGateway, new { error = ex.Message });
-        }
-
         var run = new TraderDiscoveryRunEntity
         {
-            Provider = result.Provider,
-            ExecutionId = result.ExecutionId,
-            State = result.State,
+            Provider = "dune",
+            State = "QUEUED",
             LookbackDays = request.LookbackDays,
             MinimumActiveWeeks = request.MinimumActiveWeeks,
             MinimumMeaningfulSwaps = request.MinimumMeaningfulSwaps,
             MinimumSwapUsd = request.MinimumSwapUsd,
             CandidateLimit = request.CandidateLimit,
-            CandidateCount = result.Candidates.Count,
-            StartedAtUtc = result.StartedAtUtc,
-            CompletedAtUtc = result.CompletedAtUtc,
-            Candidates = result.Candidates.Select(candidate => new TraderDiscoveryCandidateEntity
+            CandidateCount = 0,
+            ProgressPercent = 0,
+            CurrentStage = "queued",
+            StatusMessage = "Waiting for the discovery worker.",
+            ProgressLogJson = JsonSerializer.Serialize(new[]
             {
-                WalletAddress = candidate.WalletAddress,
-                MeaningfulSwapCount = candidate.MeaningfulSwapCount,
-                ActiveWeekCount = candidate.ActiveWeekCount,
-                ApprovedNotionalUsd = candidate.ApprovedNotionalUsd,
-                ActiveChainCount = candidate.ActiveChainCount,
-                ActiveChainsJson = JsonSerializer.Serialize(candidate.ActiveChains),
-                FirstTradeUtc = candidate.FirstTradeUtc,
-                LastTradeUtc = candidate.LastTradeUtc
-            }).ToList()
+                new TraderDiscoveryProgress
+                {
+                    Percent = 0,
+                    Stage = "queued",
+                    State = "QUEUED",
+                    Message = "Discovery job queued.",
+                    TimestampUtc = DateTime.UtcNow
+                }
+            }),
+            StartedAtUtc = DateTime.UtcNow,
+            CompletedAtUtc = DateTime.UtcNow
         };
 
         _db.TraderDiscoveryRuns.Add(run);
         await _db.SaveChangesAsync(cancellationToken);
-
-        return Ok(new
+        if (!_discoveryQueue.Enqueue(run.Id))
         {
-            runId = run.Id,
-            result.Provider,
-            result.ExecutionId,
-            result.State,
-            candidateCount = result.Candidates.Count,
-            result.StartedAtUtc,
-            result.CompletedAtUtc,
-            candidates = run.Candidates.Select(ToDiscoveryResponse)
-        });
+            run.State = "FAILED";
+            run.CurrentStage = "queue_failed";
+            run.ErrorMessage = "Discovery job could not be queued.";
+            await _db.SaveChangesAsync(cancellationToken);
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, ToDiscoveryRunResponse(run));
+        }
+
+        return Accepted(ToDiscoveryRunResponse(run));
     }
 
     [HttpGet("discovery-runs")]
@@ -95,27 +82,23 @@ public sealed class TraderFinderController : ControllerBase
         CancellationToken cancellationToken = default)
     {
         count = Math.Clamp(count, 1, 100);
-        return Ok(await _db.TraderDiscoveryRuns
+        var runs = await _db.TraderDiscoveryRuns
             .AsNoTracking()
             .OrderByDescending(x => x.CreatedAt)
             .Take(count)
-            .Select(x => new
-            {
-                x.Id,
-                x.Provider,
-                x.ExecutionId,
-                x.State,
-                x.LookbackDays,
-                x.MinimumActiveWeeks,
-                x.MinimumMeaningfulSwaps,
-                x.MinimumSwapUsd,
-                x.CandidateLimit,
-                x.CandidateCount,
-                x.StartedAtUtc,
-                x.CompletedAtUtc,
-                x.CreatedAt
-            })
-            .ToListAsync(cancellationToken));
+            .ToListAsync(cancellationToken);
+        return Ok(runs.Select(ToDiscoveryRunResponse));
+    }
+
+    [HttpGet("discovery-runs/{runId:long}")]
+    public async Task<IActionResult> GetDiscoveryRun(
+        long runId,
+        CancellationToken cancellationToken = default)
+    {
+        var run = await _db.TraderDiscoveryRuns
+            .AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == runId, cancellationToken);
+        return run == null ? NotFound() : Ok(ToDiscoveryRunResponse(run));
     }
 
     [HttpGet("discovery-runs/{runId:long}/candidates")]
@@ -167,24 +150,7 @@ public sealed class TraderFinderController : ControllerBase
             });
         }
 
-        var results = new List<TraderPerformance>();
-        foreach (var wallet in walletSet.Take(250))
-        {
-            results.Add(await _performanceService.AnalyzeAsync(
-                wallet,
-                request.StartUtc,
-                request.EndUtc,
-                cancellationToken));
-        }
-
-        var qualified = results
-            .Where(x => x.Status == "completed")
-            .Where(x => x.StartingValueUsd >= request.MinimumStartingValueUsd)
-            .Where(x => x.AdjustedProfitUsd > 0)
-            .OrderByDescending(x => x.Score)
-            .ThenByDescending(x => x.AdjustedProfitUsd)
-            .Take(request.Top)
-            .ToList();
+        var wallets = walletSet.Take(250).ToList();
 
         var scan = new TraderScanEntity
         {
@@ -192,23 +158,37 @@ public sealed class TraderFinderController : ControllerBase
             EndUtc = request.EndUtc.ToUniversalTime(),
             MinimumStartingValueUsd = request.MinimumStartingValueUsd,
             RequestedTop = request.Top,
-            EvaluatedWalletCount = results.Count,
-            QualifiedWalletCount = qualified.Count,
-            Candidates = qualified.Select(ToEntity).ToList()
+            EvaluatedWalletCount = 0,
+            QualifiedWalletCount = 0,
+            State = "QUEUED",
+            ProgressPercent = 0,
+            CurrentStage = "queued",
+            StatusMessage = $"Waiting to analyze {wallets.Count} wallets.",
+            CandidateWalletsJson = JsonSerializer.Serialize(wallets),
+            ProgressLogJson = JsonSerializer.Serialize(new[]
+            {
+                new TraderDiscoveryProgress
+                {
+                    Percent = 0,
+                    Stage = "queued",
+                    State = "QUEUED",
+                    Message = $"Performance verification queued for {wallets.Count} wallets.",
+                    TimestampUtc = DateTime.UtcNow
+                }
+            })
         };
         _db.TraderScans.Add(scan);
         await _db.SaveChangesAsync(cancellationToken);
-
-        return Ok(new
+        if (!_performanceQueue.Enqueue(scan.Id))
         {
-            scanId = scan.Id,
-            evaluatedWalletCount = results.Count,
-            qualifiedWalletCount = qualified.Count,
-            candidates = scan.Candidates.Select(ToResponse),
-            failures = results
-                .Where(x => x.Status == "failed")
-                .Select(x => new { x.WalletAddress, x.Error })
-        });
+            scan.State = "FAILED";
+            scan.CurrentStage = "queue_failed";
+            scan.ErrorMessage = "Performance job could not be queued.";
+            await _db.SaveChangesAsync(cancellationToken);
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, TraderPerformanceWorker.ToPayload(scan));
+        }
+
+        return Accepted(TraderPerformanceWorker.ToPayload(scan));
     }
 
     [HttpGet("scans")]
@@ -217,22 +197,23 @@ public sealed class TraderFinderController : ControllerBase
         CancellationToken cancellationToken = default)
     {
         count = Math.Clamp(count, 1, 100);
-        return Ok(await _db.TraderScans
+        var scans = await _db.TraderScans
             .AsNoTracking()
             .OrderByDescending(x => x.CreatedAt)
             .Take(count)
-            .Select(x => new
-            {
-                x.Id,
-                x.StartUtc,
-                x.EndUtc,
-                x.MinimumStartingValueUsd,
-                x.RequestedTop,
-                x.EvaluatedWalletCount,
-                x.QualifiedWalletCount,
-                x.CreatedAt
-            })
-            .ToListAsync(cancellationToken));
+            .ToListAsync(cancellationToken);
+        return Ok(scans.Select(TraderPerformanceWorker.ToPayload));
+    }
+
+    [HttpGet("scans/{scanId:long}")]
+    public async Task<IActionResult> GetScan(
+        long scanId,
+        CancellationToken cancellationToken = default)
+    {
+        var scan = await _db.TraderScans
+            .AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == scanId, cancellationToken);
+        return scan == null ? NotFound() : Ok(TraderPerformanceWorker.ToPayload(scan));
     }
 
     [HttpGet("scans/{scanId:long}/candidates")]
@@ -383,6 +364,42 @@ public sealed class TraderFinderController : ControllerBase
         item.LastTradeUtc,
         item.CreatedAt
     };
+
+    private static object ToDiscoveryRunResponse(TraderDiscoveryRunEntity run) => new
+    {
+        run.Id,
+        run.Provider,
+        run.ExecutionId,
+        run.State,
+        run.LookbackDays,
+        run.MinimumActiveWeeks,
+        run.MinimumMeaningfulSwaps,
+        run.MinimumSwapUsd,
+        run.CandidateLimit,
+        run.CandidateCount,
+        run.ProgressPercent,
+        run.CurrentStage,
+        run.StatusMessage,
+        run.ErrorMessage,
+        progressLog = DeserializeProgressLog(run.ProgressLogJson),
+        run.StartedAtUtc,
+        run.CompletedAtUtc,
+        run.CreatedAt
+    };
+
+    private static List<TraderDiscoveryProgress> DeserializeProgressLog(string json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<List<TraderDiscoveryProgress>>(
+                json,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? new();
+        }
+        catch (JsonException)
+        {
+            return new();
+        }
+    }
 
     private static bool IsValidEvmAddress(string? address)
     {

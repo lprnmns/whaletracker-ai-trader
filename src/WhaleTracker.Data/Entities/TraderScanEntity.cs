@@ -28,6 +28,29 @@ public class TraderScanEntity
     [Column("qualified_wallet_count")]
     public int QualifiedWalletCount { get; set; }
 
+    [Column("state")]
+    [MaxLength(40)]
+    public string State { get; set; } = "QUEUED";
+
+    [Column("progress_percent")]
+    public int ProgressPercent { get; set; }
+
+    [Column("current_stage")]
+    [MaxLength(80)]
+    public string CurrentStage { get; set; } = "queued";
+
+    [Column("status_message")]
+    public string StatusMessage { get; set; } = string.Empty;
+
+    [Column("error_message")]
+    public string ErrorMessage { get; set; } = string.Empty;
+
+    [Column("candidate_wallets_json")]
+    public string CandidateWalletsJson { get; set; } = "[]";
+
+    [Column("progress_log_json")]
+    public string ProgressLogJson { get; set; } = "[]";
+
     [Column("created_at")]
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 

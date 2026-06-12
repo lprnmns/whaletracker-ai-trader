@@ -30,3 +30,13 @@ public sealed class TraderDiscoveryResult
     public DateTime CompletedAtUtc { get; set; }
     public List<TraderDiscoveryCandidate> Candidates { get; set; } = new();
 }
+
+public sealed class TraderDiscoveryProgress
+{
+    public int Percent { get; set; }
+    public string Stage { get; set; } = string.Empty;
+    public string State { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public string ExecutionId { get; set; } = string.Empty;
+    public DateTime TimestampUtc { get; set; } = DateTime.UtcNow;
+}
