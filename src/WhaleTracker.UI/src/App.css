@@ -1,13 +1,19 @@
 .mission-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 420px;
+  grid-template-columns: minmax(0, 1fr) var(--side-panel-width, 420px);
   background:
     radial-gradient(circle at 24% 18%, rgba(14, 165, 233, 0.18), transparent 32%),
     radial-gradient(circle at 76% 62%, rgba(250, 204, 21, 0.08), transparent 34%),
     #030712;
   color: #e5eefc;
   overflow: hidden;
+}
+
+.mission-shell.panel-resizing,
+.mission-shell.panel-resizing * {
+  cursor: col-resize !important;
+  user-select: none;
 }
 
 .universe-stage {
@@ -157,6 +163,32 @@
   flex-direction: column;
   min-width: 0;
   background: rgba(2, 6, 23, 0.92);
+}
+
+.panel-resize-handle {
+  position: absolute;
+  z-index: 30;
+  top: 50%;
+  left: -7px;
+  width: 14px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  transform: translateY(-50%);
+  border: 1px solid rgba(125, 211, 252, 0.42);
+  border-radius: 6px;
+  background: #0b1728;
+  color: #7dd3fc;
+  cursor: col-resize;
+  touch-action: none;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.panel-resize-handle:hover,
+.panel-resize-handle:focus-visible {
+  border-color: #67e8f9;
+  background: #10233a;
+  outline: none;
 }
 
 .ai-vitals {
@@ -605,6 +637,10 @@ button:hover {
   .side-panel {
     height: auto;
     min-height: 720px;
+  }
+
+  .panel-resize-handle {
+    display: none;
   }
 }
 

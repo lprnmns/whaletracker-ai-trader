@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react'
 import ForceGraph3D from 'react-force-graph-3d'
 import SpriteText from 'three-spritetext'
 import * as THREE from 'three'
@@ -11,6 +12,7 @@ import {
   BrainCircuit,
   CircleDollarSign,
   Database,
+  GripVertical,
   Plus,
   Radar,
   RefreshCw,
@@ -398,6 +400,7 @@ function AiCoreOrb({ bias }: { bias: string }) {
 function App() {
   const graphRef = useRef<any>(null)
   const aiCoreVisualRef = useRef<THREE.Group | null>(null)
+  const panelResizeRef = useRef({ startX: 0, startWidth: 420 })
   const [wallets, setWallets] = useState<Wallet[]>([])
   const [events, setEvents] = useState<LiveEvent[]>([])
   const [aiState, setAiState] = useState<AiState>({ biasScore: 0, direction: 'NEUTRAL', summary: '', eventCount: 0 })
@@ -418,6 +421,11 @@ function App() {
   const [chatLines, setChatLines] = useState<ChatLine[]>([])
   const [isChatThinking, setIsChatThinking] = useState(false)
   const [eventPulseRevision, setEventPulseRevision] = useState(0)
+  const [panelWidth, setPanelWidth] = useState(() => {
+    const stored = Number(window.localStorage.getItem('mission-control-panel-width'))
+    return Number.isFinite(stored) && stored >= 340 ? stored : 420
+  })
+  const [isPanelResizing, setIsPanelResizing] = useState(false)
   const [traderForm, setTraderForm] = useState({
     startUtc: '',
     endUtc: '',
@@ -432,6 +440,50 @@ function App() {
     minimumSwapUsd: 1500,
     candidateLimit: 100,
   })
+
+  const clampPanelWidth = useCallback((width: number) => {
+    const maximum = Math.min(760, Math.max(420, window.innerWidth * 0.58))
+    return Math.round(Math.min(maximum, Math.max(340, width)))
+  }, [])
+
+  const beginPanelResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (window.innerWidth <= 1120) return
+    panelResizeRef.current = { startX: event.clientX, startWidth: panelWidth }
+    setIsPanelResizing(true)
+    event.currentTarget.setPointerCapture(event.pointerId)
+    event.preventDefault()
+  }
+
+  const resizePanelWithKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+    setPanelWidth((current) => clampPanelWidth(current + (event.key === 'ArrowLeft' ? 24 : -24)))
+  }
+
+  useEffect(() => {
+    if (!isPanelResizing) return
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const nextWidth = panelResizeRef.current.startWidth + panelResizeRef.current.startX - event.clientX
+      setPanelWidth(clampPanelWidth(nextWidth))
+    }
+    const stopResizing = () => setIsPanelResizing(false)
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', stopResizing, { once: true })
+    window.addEventListener('pointercancel', stopResizing, { once: true })
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', stopResizing)
+      window.removeEventListener('pointercancel', stopResizing)
+    }
+  }, [clampPanelWidth, isPanelResizing])
+
+  useEffect(() => {
+    window.localStorage.setItem('mission-control-panel-width', String(panelWidth))
+    const frame = window.requestAnimationFrame(() => window.dispatchEvent(new Event('resize')))
+    return () => window.cancelAnimationFrame(frame)
+  }, [panelWidth])
 
   useEffect(() => {
     let animationFrame = 0
@@ -995,7 +1047,10 @@ function App() {
   const selectedPayload = parsePayload(selected?.event)
 
   return (
-    <main className="mission-shell">
+    <main
+      className={`mission-shell${isPanelResizing ? ' panel-resizing' : ''}`}
+      style={{ '--side-panel-width': `${panelWidth}px` } as CSSProperties}
+    >
       <section className="universe-stage">
         <header className="topbar">
           <div>
@@ -1062,6 +1117,20 @@ function App() {
       </section>
 
       <aside className="side-panel">
+        <div
+          className="panel-resize-handle"
+          role="separator"
+          aria-label="Resize side panel"
+          aria-orientation="vertical"
+          aria-valuemin={340}
+          aria-valuemax={760}
+          aria-valuenow={panelWidth}
+          tabIndex={0}
+          onPointerDown={beginPanelResize}
+          onKeyDown={resizePanelWithKeyboard}
+        >
+          <GripVertical size={16} />
+        </div>
         <div className="ai-vitals">
           <Canvas camera={{ position: [0, 0, 5], fov: 45 }}>
             <AiCoreOrb bias={aiState.direction} />
