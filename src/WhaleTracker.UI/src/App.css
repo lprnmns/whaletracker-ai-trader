@@ -309,6 +309,13 @@ pre {
   padding: 10px;
 }
 
+.wallet-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: 8px;
+}
+
 .timeline-row span,
 .wallet-row span {
   display: block;
@@ -534,6 +541,27 @@ input {
   border-radius: 999px;
   display: grid;
   place-items: center;
+}
+
+.candidate-actions {
+  display: grid;
+  gap: 6px;
+}
+
+.external-wallet-link {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.78);
+  color: #bae6fd;
+  text-decoration: none;
+}
+
+.external-wallet-link:hover {
+  border-color: rgba(125, 211, 252, 0.65);
 }
 
 .wallet-seed-field {

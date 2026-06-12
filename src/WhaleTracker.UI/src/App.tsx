@@ -12,6 +12,7 @@ import {
   BrainCircuit,
   CircleDollarSign,
   Database,
+  ExternalLink,
   GripVertical,
   Plus,
   Radar,
@@ -286,6 +287,10 @@ function formatUsd(value?: number) {
 function shortAddress(value?: string) {
   if (!value) return '--'
   return `${value.slice(0, 6)}...${value.slice(-4)}`
+}
+
+function zerionUrl(value?: string) {
+  return value ? `https://app.zerion.io/${value}/overview` : 'https://app.zerion.io/'
 }
 
 function formatTime(value?: string) {
@@ -1209,9 +1214,22 @@ function App() {
               {wallets.length === 0 && <p className="muted">No tracked wallets yet.</p>}
               {wallets.map((wallet) => (
                 <button key={wallet.id} className="wallet-row" onClick={() => setSelected({ id: `wallet:${wallet.walletAddress}`, name: wallet.label || wallet.walletAddress, kind: 'wallet', color: '#a78bfa', size: 8, wallet })}>
-                  <span>{wallet.label || shortAddress(wallet.walletAddress)}</span>
-                  <strong>{Number(wallet.confidenceScore || 0).toFixed(1)}</strong>
-                  <small>{wallet.source || '--'} · {wallet.isActive ? 'active' : 'paused'}</small>
+                  <div>
+                    <span>{wallet.label || shortAddress(wallet.walletAddress)}</span>
+                    <strong>{Number(wallet.confidenceScore || 0).toFixed(1)}</strong>
+                    <small>{wallet.source || '--'} · {wallet.isActive ? 'active' : 'paused'}</small>
+                  </div>
+                  <a
+                    className="external-wallet-link"
+                    href={zerionUrl(wallet.walletAddress)}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="Open in Zerion"
+                    aria-label={`Open ${shortAddress(wallet.walletAddress)} in Zerion`}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <ExternalLink size={15} />
+                  </a>
                 </button>
               ))}
             </div>
@@ -1285,6 +1303,16 @@ function App() {
                         avg {formatUsd(candidate.averageSwapUsd)} · {candidate.distinctMajorAssets} majors · {candidate.activeChains.join(', ')} · last trade {formatTime(candidate.lastTradeUtc)}
                       </small>
                     </div>
+                    <a
+                      className="external-wallet-link"
+                      href={zerionUrl(candidate.walletAddress)}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="Open in Zerion"
+                      aria-label={`Open ${shortAddress(candidate.walletAddress)} in Zerion`}
+                    >
+                      <ExternalLink size={15} />
+                    </a>
                   </div>
                 ))}
               </div>
@@ -1363,7 +1391,19 @@ function App() {
                         {formatUsd(candidate.startingValueUsd)} → {formatUsd(candidate.endingValueUsd)} · external in {formatUsd(candidate.receivedExternalUsd)} · out {formatUsd(candidate.sentExternalUsd)}
                       </small>
                     </div>
-                    <button onClick={() => trackTraderCandidate(candidate)} aria-label="Track trader"><Plus size={16} /></button>
+                    <div className="candidate-actions">
+                      <a
+                        className="external-wallet-link"
+                        href={zerionUrl(candidate.walletAddress)}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="Open in Zerion"
+                        aria-label={`Open ${shortAddress(candidate.walletAddress)} in Zerion`}
+                      >
+                        <ExternalLink size={15} />
+                      </a>
+                      <button onClick={() => trackTraderCandidate(candidate)} aria-label="Track trader"><Plus size={16} /></button>
+                    </div>
                   </div>
                 ))}
               </div>
