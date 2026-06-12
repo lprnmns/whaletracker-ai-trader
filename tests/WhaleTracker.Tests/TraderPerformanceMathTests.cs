@@ -21,7 +21,7 @@ public class TraderPerformanceMathTests
     [Fact]
     public void Score_CombinesProfitAndReturnWithoutExceedingOneHundred()
     {
-        Assert.Equal(100m, TraderPerformanceMath.Score(500_000m, 250m));
+        Assert.Equal(100m, TraderPerformanceMath.Score(500_000m, 250m, 100m, 0m));
         Assert.Equal(0m, TraderPerformanceMath.Score(-1m, -1m));
     }
 }

@@ -21,6 +21,8 @@ public sealed class TraderPerformance
     public decimal AdjustedProfitUsd { get; set; }
     public decimal AdjustedReturnPercent { get; set; }
     public decimal RealizedGainUsd { get; set; }
+    public decimal PositivePeriodPercent { get; set; }
+    public decimal MaximumDrawdownPercent { get; set; }
     public decimal Score { get; set; }
     public DateTime StartPointUtc { get; set; }
     public DateTime EndPointUtc { get; set; }
@@ -48,10 +50,21 @@ public static class TraderPerformanceMath
     public static decimal AdjustedReturnPercent(decimal startingValue, decimal adjustedProfit) =>
         startingValue > 0 ? adjustedProfit / startingValue * 100m : 0m;
 
-    public static decimal Score(decimal adjustedProfit, decimal adjustedReturnPercent)
+    public static decimal Score(
+        decimal adjustedProfit,
+        decimal adjustedReturnPercent,
+        decimal positivePeriodPercent = 50m,
+        decimal maximumDrawdownPercent = 50m)
     {
-        var profitScore = Math.Clamp(adjustedProfit / 250_000m, 0m, 1m) * 45m;
-        var returnScore = Math.Clamp(adjustedReturnPercent / 100m, 0m, 1m) * 55m;
-        return Math.Round(profitScore + returnScore, 2);
+        if (adjustedProfit <= 0 || adjustedReturnPercent <= 0)
+        {
+            return 0m;
+        }
+
+        var profitScore = Math.Clamp(adjustedProfit / 250_000m, 0m, 1m) * 25m;
+        var returnScore = Math.Clamp(adjustedReturnPercent / 75m, 0m, 1m) * 35m;
+        var consistencyScore = Math.Clamp(positivePeriodPercent / 100m, 0m, 1m) * 25m;
+        var drawdownScore = (1m - Math.Clamp(maximumDrawdownPercent / 60m, 0m, 1m)) * 15m;
+        return Math.Round(profitScore + returnScore + consistencyScore + drawdownScore, 2);
     }
 }

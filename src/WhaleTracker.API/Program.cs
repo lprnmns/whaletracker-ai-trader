@@ -266,6 +266,8 @@ static void EnsureTraderFinderSchema(WhaleTrackerDbContext db)
             adjusted_profit_usd NUMERIC NOT NULL DEFAULT 0,
             adjusted_return_percent NUMERIC NOT NULL DEFAULT 0,
             realized_gain_usd NUMERIC NOT NULL DEFAULT 0,
+            positive_period_percent NUMERIC NOT NULL DEFAULT 0,
+            maximum_drawdown_percent NUMERIC NOT NULL DEFAULT 0,
             score NUMERIC NOT NULL DEFAULT 0,
             start_point_utc TIMESTAMPTZ NOT NULL,
             end_point_utc TIMESTAMPTZ NOT NULL,
@@ -299,6 +301,10 @@ static void EnsureTraderFinderSchema(WhaleTrackerDbContext db)
             ADD COLUMN IF NOT EXISTS candidate_wallets_json TEXT NOT NULL DEFAULT '[]';
         ALTER TABLE trader_scans
             ADD COLUMN IF NOT EXISTS progress_log_json TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE trader_candidates
+            ADD COLUMN IF NOT EXISTS positive_period_percent NUMERIC NOT NULL DEFAULT 0;
+        ALTER TABLE trader_candidates
+            ADD COLUMN IF NOT EXISTS maximum_drawdown_percent NUMERIC NOT NULL DEFAULT 0;
         """);
 }
 
@@ -334,6 +340,10 @@ static void EnsureTraderDiscoverySchema(WhaleTrackerDbContext db)
             meaningful_swap_count INTEGER NOT NULL DEFAULT 0,
             active_week_count INTEGER NOT NULL DEFAULT 0,
             approved_notional_usd NUMERIC NOT NULL DEFAULT 0,
+            average_swap_usd NUMERIC NOT NULL DEFAULT 0,
+            maximum_daily_swaps INTEGER NOT NULL DEFAULT 0,
+            distinct_major_assets INTEGER NOT NULL DEFAULT 0,
+            copyability_score NUMERIC NOT NULL DEFAULT 0,
             active_chain_count INTEGER NOT NULL DEFAULT 0,
             active_chains_json TEXT NOT NULL DEFAULT '[]',
             first_trade_utc TIMESTAMPTZ NOT NULL,
@@ -366,6 +376,14 @@ static void EnsureTraderDiscoverySchema(WhaleTrackerDbContext db)
             ADD COLUMN IF NOT EXISTS error_message TEXT NOT NULL DEFAULT '';
         ALTER TABLE trader_discovery_runs
             ADD COLUMN IF NOT EXISTS progress_log_json TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE trader_discovery_candidates
+            ADD COLUMN IF NOT EXISTS average_swap_usd NUMERIC NOT NULL DEFAULT 0;
+        ALTER TABLE trader_discovery_candidates
+            ADD COLUMN IF NOT EXISTS maximum_daily_swaps INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE trader_discovery_candidates
+            ADD COLUMN IF NOT EXISTS distinct_major_assets INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE trader_discovery_candidates
+            ADD COLUMN IF NOT EXISTS copyability_score NUMERIC NOT NULL DEFAULT 0;
         """);
 }
 

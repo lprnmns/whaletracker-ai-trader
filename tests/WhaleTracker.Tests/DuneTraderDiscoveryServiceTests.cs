@@ -48,10 +48,13 @@ public class DuneTraderDiscoveryServiceTests
         Assert.Contains("'BTC', 'WBTC', 'CBBTC', 'ETH', 'WETH', 'SOL', 'LINK', 'AVAX'", sql);
         Assert.Contains("'USDT', 'USDC', 'DAI', 'USDE'", sql);
         Assert.Contains("FROM labels.addresses", sql);
+        Assert.Contains("FROM dex.sandwiches", sql);
         Assert.Contains("l.blockchain = s.blockchain", sql);
         Assert.Contains("l.address = s.wallet", sql);
         Assert.Contains("'cex', 'bridge', 'mev', 'bot'", sql);
         Assert.DoesNotContain("'dex', 'dao'", sql);
         Assert.Contains("'diagnostics' AS row_kind", sql);
+        Assert.Contains("maximum_daily_swaps <= 50", sql);
+        Assert.Contains("copyability_score", sql);
     }
 }

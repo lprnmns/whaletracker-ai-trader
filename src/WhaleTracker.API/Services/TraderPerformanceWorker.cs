@@ -111,6 +111,9 @@ public sealed class TraderPerformanceWorker : BackgroundService
             .Where(x => x.Status == "completed")
             .Where(x => x.StartingValueUsd >= scan.MinimumStartingValueUsd)
             .Where(x => x.AdjustedProfitUsd > 0)
+            .Where(x => x.AdjustedReturnPercent >= 3m)
+            .Where(x => x.PositivePeriodPercent >= 55m)
+            .Where(x => x.MaximumDrawdownPercent <= 35m)
             .OrderByDescending(x => x.Score)
             .ThenByDescending(x => x.AdjustedProfitUsd)
             .Take(scan.RequestedTop)
@@ -228,6 +231,8 @@ public sealed class TraderPerformanceWorker : BackgroundService
         AdjustedProfitUsd = item.AdjustedProfitUsd,
         AdjustedReturnPercent = item.AdjustedReturnPercent,
         RealizedGainUsd = item.RealizedGainUsd,
+        PositivePeriodPercent = item.PositivePeriodPercent,
+        MaximumDrawdownPercent = item.MaximumDrawdownPercent,
         Score = item.Score,
         StartPointUtc = item.StartPointUtc,
         EndPointUtc = item.EndPointUtc,

@@ -146,6 +146,10 @@ type TraderDiscoveryCandidate = {
   meaningfulSwapCount: number
   activeWeekCount: number
   approvedNotionalUsd: number
+  averageSwapUsd: number
+  maximumDailySwaps: number
+  distinctMajorAssets: number
+  copyabilityScore: number
   activeChainCount: number
   activeChains: string[]
   firstTradeUtc: string
@@ -1275,9 +1279,11 @@ function App() {
                     <div>
                       <strong>{shortAddress(candidate.walletAddress)}</strong>
                       <span>
-                        {candidate.meaningfulSwapCount} swaps · {candidate.activeWeekCount} active weeks · {formatUsd(candidate.approvedNotionalUsd)}
+                        copy {Number(candidate.copyabilityScore || 0).toFixed(1)} · {candidate.meaningfulSwapCount} swaps · max/day {candidate.maximumDailySwaps}
                       </span>
-                      <small>{candidate.activeChains.join(', ')} · last trade {formatTime(candidate.lastTradeUtc)}</small>
+                      <small>
+                        avg {formatUsd(candidate.averageSwapUsd)} · {candidate.distinctMajorAssets} majors · {candidate.activeChains.join(', ')} · last trade {formatTime(candidate.lastTradeUtc)}
+                      </small>
                     </div>
                   </div>
                 ))}

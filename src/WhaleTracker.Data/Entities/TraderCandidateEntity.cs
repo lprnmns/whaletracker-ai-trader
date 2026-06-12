@@ -43,6 +43,12 @@ public class TraderCandidateEntity
     [Column("realized_gain_usd")]
     public decimal RealizedGainUsd { get; set; }
 
+    [Column("positive_period_percent")]
+    public decimal PositivePeriodPercent { get; set; }
+
+    [Column("maximum_drawdown_percent")]
+    public decimal MaximumDrawdownPercent { get; set; }
+
     [Column("score")]
     public decimal Score { get; set; }
 

@@ -149,6 +149,14 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                         'USDT', 'USDC', 'DAI', 'USDE'
                     )
             ),
+            sandwich_wallets AS (
+                SELECT DISTINCT blockchain, tx_from AS wallet
+                FROM dex.sandwiches
+                WHERE block_month >= date_trunc('month', current_date - interval '{{request.LookbackDays}}' day)
+                  AND block_time >= now() - interval '{{request.LookbackDays}}' day
+                  AND blockchain IN ('ethereum', 'arbitrum', 'base', 'optimism')
+                  AND tx_from IS NOT NULL
+            ),
             eligible_swap_legs AS (
                 SELECT s.*
                 FROM approved_pair_swaps s
@@ -161,6 +169,12 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                             'cex', 'bridge', 'mev', 'bot'
                         )
                   )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM sandwich_wallets mev
+                      WHERE mev.blockchain = s.blockchain
+                        AND mev.wallet = s.wallet
+                  )
             ),
             transaction_swaps AS (
                 SELECT
@@ -168,35 +182,80 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                     tx_hash,
                     wallet,
                     min(block_time) AS block_time,
-                    max(amount_usd) AS amount_usd
+                    max(amount_usd) AS amount_usd,
+                    max(bought_symbol) AS bought_symbol,
+                    max(sold_symbol) AS sold_symbol
                 FROM eligible_swap_legs
                 GROUP BY blockchain, tx_hash, wallet
             ),
-            activity_qualified_wallets AS (
+            daily_activity AS (
                 SELECT
                     wallet,
+                    max(daily_swaps) AS maximum_daily_swaps
+                FROM (
+                    SELECT wallet, date(block_time) AS trade_date, count(*) AS daily_swaps
+                    FROM transaction_swaps
+                    GROUP BY wallet, date(block_time)
+                )
+                GROUP BY wallet
+            ),
+            wallet_assets AS (
+                SELECT
+                    wallet,
+                    count(DISTINCT asset) AS distinct_major_assets
+                FROM (
+                    SELECT wallet, bought_symbol AS asset
+                    FROM transaction_swaps
+                    WHERE bought_symbol NOT IN ('USDT', 'USDC', 'DAI', 'USDE')
+                    UNION
+                    SELECT wallet, sold_symbol AS asset
+                    FROM transaction_swaps
+                    WHERE sold_symbol NOT IN ('USDT', 'USDC', 'DAI', 'USDE')
+                )
+                GROUP BY wallet
+            ),
+            activity_qualified_wallets AS (
+                SELECT
+                    t.wallet,
                     count(*) AS meaningful_swap_count,
                     count(DISTINCT date_trunc('week', block_time)) AS active_week_count,
                     round(sum(amount_usd), 2) AS approved_notional_usd,
+                    round(avg(amount_usd), 2) AS average_swap_usd,
+                    d.maximum_daily_swaps,
+                    a.distinct_major_assets,
+                    round(
+                        100 * (
+                            0.45 * least(count(DISTINCT date_trunc('week', block_time)) / {{Math.Max(1m, request.LookbackDays / 7m).ToString("0.########", CultureInfo.InvariantCulture)}}, 1) +
+                            0.25 * least(a.distinct_major_assets / 4.0, 1) +
+                            0.20 * (1 - least(d.maximum_daily_swaps / 50.0, 1)) +
+                            0.10 * least(ln(1 + avg(amount_usd)) / ln(100001), 1)
+                        ),
+                        2
+                    ) AS copyability_score,
                     count(DISTINCT blockchain) AS active_chain_count,
                     array_agg(DISTINCT blockchain) AS active_chains,
                     min(block_time) AS first_trade_utc,
                     max(block_time) AS last_trade_utc
-                FROM transaction_swaps
-                GROUP BY wallet
+                FROM transaction_swaps t
+                JOIN daily_activity d ON d.wallet = t.wallet
+                JOIN wallet_assets a ON a.wallet = t.wallet
+                GROUP BY t.wallet, d.maximum_daily_swaps, a.distinct_major_assets
                 HAVING count(*) >= {{request.MinimumMeaningfulSwaps}}
                    AND count(DISTINCT date_trunc('week', block_time)) >= {{request.MinimumActiveWeeks}}
+                   AND count(*) <= {{request.LookbackDays * 12}}
+                   AND d.maximum_daily_swaps <= 50
+                   AND a.distinct_major_assets >= 2
             ),
             prequalified_wallets AS (
                 SELECT *
                 FROM activity_qualified_wallets
-                ORDER BY approved_notional_usd DESC
+                ORDER BY copyability_score DESC, approved_notional_usd DESC
                 LIMIT {{Math.Min(2500, request.CandidateLimit * 5)}}
             ),
             selected_candidates AS (
                 SELECT *
                 FROM prequalified_wallets
-                ORDER BY approved_notional_usd DESC
+                ORDER BY copyability_score DESC, approved_notional_usd DESC
                 LIMIT {{request.CandidateLimit}}
             ),
             diagnostics AS (
@@ -213,6 +272,10 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                 meaningful_swap_count,
                 active_week_count,
                 approved_notional_usd,
+                average_swap_usd,
+                maximum_daily_swaps,
+                distinct_major_assets,
+                copyability_score,
                 active_chain_count,
                 active_chains,
                 first_trade_utc,
@@ -230,6 +293,10 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                 cast(null AS bigint) AS meaningful_swap_count,
                 cast(null AS bigint) AS active_week_count,
                 cast(null AS double) AS approved_notional_usd,
+                cast(null AS double) AS average_swap_usd,
+                cast(null AS bigint) AS maximum_daily_swaps,
+                cast(null AS bigint) AS distinct_major_assets,
+                cast(null AS double) AS copyability_score,
                 cast(null AS bigint) AS active_chain_count,
                 cast(array[] AS array(varchar)) AS active_chains,
                 cast(null AS timestamp) AS first_trade_utc,
@@ -501,6 +568,10 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
                 MeaningfulSwapCount = GetInt(row, "meaningful_swap_count"),
                 ActiveWeekCount = GetInt(row, "active_week_count"),
                 ApprovedNotionalUsd = GetDecimal(row, "approved_notional_usd"),
+                AverageSwapUsd = GetDecimal(row, "average_swap_usd"),
+                MaximumDailySwaps = GetInt(row, "maximum_daily_swaps"),
+                DistinctMajorAssets = GetInt(row, "distinct_major_assets"),
+                CopyabilityScore = GetDecimal(row, "copyability_score"),
                 ActiveChainCount = GetInt(row, "active_chain_count"),
                 ActiveChains = GetStringArray(row, "active_chains"),
                 FirstTradeUtc = GetDateTime(row, "first_trade_utc"),
@@ -587,15 +658,27 @@ public sealed class DuneTraderDiscoveryService : ITraderDiscoveryService
             ? parsed
             : 0m;
 
-    private static DateTime GetDateTime(JsonElement element, string name) =>
-        element.TryGetProperty(name, out var value) &&
-        DateTime.TryParse(
-            value.ToString(),
+    private static DateTime GetDateTime(JsonElement element, string name)
+    {
+        if (!element.TryGetProperty(name, out var value))
+        {
+            return DateTime.MinValue;
+        }
+
+        var text = value.ToString().Trim();
+        if (text.EndsWith(" UTC", StringComparison.OrdinalIgnoreCase))
+        {
+            text = $"{text[..^4]}Z";
+        }
+
+        return DateTime.TryParse(
+            text,
             CultureInfo.InvariantCulture,
             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
             out var parsed)
             ? parsed
             : DateTime.MinValue;
+    }
 
     private static List<string> GetStringArray(JsonElement element, string name)
     {

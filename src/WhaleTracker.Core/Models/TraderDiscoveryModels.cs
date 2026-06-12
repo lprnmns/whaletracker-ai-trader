@@ -15,6 +15,10 @@ public sealed class TraderDiscoveryCandidate
     public int MeaningfulSwapCount { get; set; }
     public int ActiveWeekCount { get; set; }
     public decimal ApprovedNotionalUsd { get; set; }
+    public decimal AverageSwapUsd { get; set; }
+    public int MaximumDailySwaps { get; set; }
+    public int DistinctMajorAssets { get; set; }
+    public decimal CopyabilityScore { get; set; }
     public int ActiveChainCount { get; set; }
     public List<string> ActiveChains { get; set; } = new();
     public DateTime FirstTradeUtc { get; set; }

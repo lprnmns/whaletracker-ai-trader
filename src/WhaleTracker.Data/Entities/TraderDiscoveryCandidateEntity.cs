@@ -28,6 +28,18 @@ public class TraderDiscoveryCandidateEntity
     [Column("approved_notional_usd")]
     public decimal ApprovedNotionalUsd { get; set; }
 
+    [Column("average_swap_usd")]
+    public decimal AverageSwapUsd { get; set; }
+
+    [Column("maximum_daily_swaps")]
+    public int MaximumDailySwaps { get; set; }
+
+    [Column("distinct_major_assets")]
+    public int DistinctMajorAssets { get; set; }
+
+    [Column("copyability_score")]
+    public decimal CopyabilityScore { get; set; }
+
     [Column("active_chain_count")]
     public int ActiveChainCount { get; set; }
 

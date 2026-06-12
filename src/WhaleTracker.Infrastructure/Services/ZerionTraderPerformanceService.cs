@@ -56,6 +56,11 @@ public sealed class ZerionTraderPerformanceService : ITraderPerformanceService
             var startPoint = NearestPoint(chart, startUtc);
             var endPoint = NearestPoint(chart, endUtc);
             var pnl = ParsePnl(pnlJson);
+            var periodPoints = chart
+                .Where(point => point.Timestamp >= startPoint.Timestamp && point.Timestamp <= endPoint.Timestamp)
+                .ToList();
+            var positivePeriodPercent = CalculatePositiveWeeklyPeriodPercent(periodPoints, startPoint.Timestamp);
+            var maximumDrawdownPercent = CalculateMaximumDrawdownPercent(periodPoints);
 
             var adjustedProfit = TraderPerformanceMath.AdjustedProfit(
                 startPoint.Value,
@@ -77,7 +82,13 @@ public sealed class ZerionTraderPerformanceService : ITraderPerformanceService
                 AdjustedProfitUsd = Round(adjustedProfit),
                 AdjustedReturnPercent = Math.Round(adjustedReturn, 4),
                 RealizedGainUsd = Round(pnl.RealizedGain),
-                Score = TraderPerformanceMath.Score(adjustedProfit, adjustedReturn),
+                PositivePeriodPercent = positivePeriodPercent,
+                MaximumDrawdownPercent = maximumDrawdownPercent,
+                Score = TraderPerformanceMath.Score(
+                    adjustedProfit,
+                    adjustedReturn,
+                    positivePeriodPercent,
+                    maximumDrawdownPercent),
                 StartPointUtc = startPoint.Timestamp,
                 EndPointUtc = endPoint.Timestamp,
                 ChartPeriod = period
@@ -110,9 +121,9 @@ public sealed class ZerionTraderPerformanceService : ITraderPerformanceService
             try
             {
                 var elapsed = DateTime.UtcNow - _lastRequestAt;
-                if (elapsed < TimeSpan.FromSeconds(2))
+                if (elapsed < TimeSpan.FromSeconds(20))
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(2) - elapsed, cancellationToken);
+                    await Task.Delay(TimeSpan.FromSeconds(20) - elapsed, cancellationToken);
                 }
 
                 response = await _httpClient.GetAsync(requestUri, cancellationToken);
@@ -139,7 +150,9 @@ public sealed class ZerionTraderPerformanceService : ITraderPerformanceService
             }
 
             var delay = response.Headers.RetryAfter?.Delta ??
-                        TimeSpan.FromSeconds(Math.Min(30, attempt * 4));
+                        (response.StatusCode == HttpStatusCode.TooManyRequests
+                            ? TimeSpan.FromSeconds(Math.Min(180, 45 * attempt))
+                            : TimeSpan.FromSeconds(Math.Min(30, attempt * 4)));
             await Task.Delay(delay, cancellationToken);
             }
         }
@@ -184,6 +197,42 @@ public sealed class ZerionTraderPerformanceService : ITraderPerformanceService
 
         var utcTarget = target.ToUniversalTime();
         return points.MinBy(point => Math.Abs((point.Timestamp - utcTarget).Ticks))!;
+    }
+
+    private static decimal CalculatePositiveWeeklyPeriodPercent(
+        List<ChartPoint> points,
+        DateTime startUtc)
+    {
+        var weeklyReturns = points
+            .GroupBy(point => Math.Max(0, (int)((point.Timestamp - startUtc).TotalDays / 7)))
+            .Select(group =>
+            {
+                var ordered = group.OrderBy(point => point.Timestamp).ToList();
+                return ordered.Count >= 2 && ordered[^1].Value > ordered[0].Value;
+            })
+            .ToList();
+
+        return weeklyReturns.Count == 0
+            ? 0m
+            : Math.Round(weeklyReturns.Count(value => value) * 100m / weeklyReturns.Count, 2);
+    }
+
+    private static decimal CalculateMaximumDrawdownPercent(List<ChartPoint> points)
+    {
+        decimal peak = 0m;
+        decimal maximumDrawdown = 0m;
+        foreach (var point in points.OrderBy(point => point.Timestamp))
+        {
+            peak = Math.Max(peak, point.Value);
+            if (peak <= 0)
+            {
+                continue;
+            }
+
+            maximumDrawdown = Math.Max(maximumDrawdown, (peak - point.Value) / peak * 100m);
+        }
+
+        return Math.Round(maximumDrawdown, 2);
     }
 
     private static string SelectChartPeriod(DateTime startUtc)

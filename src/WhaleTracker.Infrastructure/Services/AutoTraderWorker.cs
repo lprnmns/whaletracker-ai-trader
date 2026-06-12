@@ -39,6 +39,12 @@ public class AutoTraderWorker : BackgroundService
                 await db.SaveChangesAsync(stoppingToken);
 
                 delaySeconds = Math.Clamp(control.PollingIntervalSeconds, 5, 3600);
+                if (!control.AutoTradingEnabled)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds), stoppingToken);
+                    continue;
+                }
+
                 control.LastScanStartedAt = DateTime.UtcNow;
                 control.LastError = string.Empty;
                 await db.SaveChangesAsync(stoppingToken);
