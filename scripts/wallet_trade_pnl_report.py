@@ -35,8 +35,25 @@ DEFAULT_WALLETS = [
     "0xf14aa9ed0b6d90b7a49b782f6a9846bea8f0b333",
 ]
 
-MAJOR_ASSETS = {"BTC", "WBTC", "CBBTC", "ETH", "WETH", "SOL", "LINK", "AVAX"}
-STABLE_ASSETS = {"USDT", "USDC", "DAI", "USDE"}
+MAJOR_ASSETS = {
+    "BTC",
+    "WBTC",
+    "CBBTC",
+    "ETH",
+    "WETH",
+    "SOL",
+    "LINK",
+    "AVAX",
+    "ARB",
+    "OP",
+    "UNI",
+    "AAVE",
+    "MATIC",
+    "POL",
+    "LDO",
+    "PENDLE",
+}
+STABLE_ASSETS = {"USDT", "USDC", "DAI", "USDE", "USDS"}
 COPYABLE_ASSETS = MAJOR_ASSETS | STABLE_ASSETS
 
 
@@ -93,6 +110,10 @@ def dt(value: str) -> datetime:
 
 def money(value: Decimal) -> str:
     return f"{value.quantize(Decimal('0.01'))}"
+
+
+def pct(value: Decimal) -> str:
+    return f"{value.quantize(Decimal('0.0001'))}"
 
 
 def number(value: Decimal) -> str:
@@ -310,6 +331,164 @@ LIMIT {candidate_limit}
 """
 
 
+def build_high_pnl_discovery_sql(
+    days: int,
+    min_trade_usd: Decimal,
+    min_active_weeks: int,
+    min_swaps: int,
+    candidate_limit: int,
+    min_notional_usd: Decimal,
+) -> str:
+    min_trade = str(min_trade_usd)
+    min_notional = str(min_notional_usd)
+    limit = max(1, min(candidate_limit, 20000))
+    max_swaps = max(days * 20, min_swaps)
+    return f"""
+WITH approved_symbols(symbol) AS (
+    VALUES
+        ('BTC'), ('WBTC'), ('CBBTC'), ('ETH'), ('WETH'), ('SOL'), ('LINK'), ('AVAX'),
+        ('ARB'), ('OP'), ('UNI'), ('AAVE'), ('MATIC'), ('POL'), ('LDO'), ('PENDLE'),
+        ('USDT'), ('USDC'), ('DAI'), ('USDE'), ('USDS')
+),
+major_symbols(symbol) AS (
+    VALUES
+        ('BTC'), ('WBTC'), ('CBBTC'), ('ETH'), ('WETH'), ('SOL'), ('LINK'), ('AVAX'),
+        ('ARB'), ('OP'), ('UNI'), ('AAVE'), ('MATIC'), ('POL'), ('LDO'), ('PENDLE')
+),
+aggregator_intents AS (
+    SELECT
+        t.blockchain,
+        t.tx_hash,
+        t.tx_from AS wallet,
+        t.block_time,
+        try_cast(t.amount_usd AS double) AS amount_usd,
+        upper(coalesce(t.token_bought_symbol, '')) AS bought_symbol,
+        upper(coalesce(t.token_sold_symbol, '')) AS sold_symbol,
+        1 AS intent_priority
+    FROM dex_aggregator.trades t
+    WHERE t.block_date >= current_date - interval '{days}' day
+      AND t.block_time >= now() - interval '{days}' day
+      AND t.blockchain IN ('ethereum', 'arbitrum', 'base', 'optimism')
+      AND t.tx_from IS NOT NULL
+      AND try_cast(t.amount_usd AS double) BETWEEN {min_trade} AND 10000000
+),
+raw_non_aggregator_intents AS (
+    SELECT
+        t.blockchain,
+        t.tx_hash,
+        t.tx_from AS wallet,
+        min(t.block_time) AS block_time,
+        max(try_cast(t.amount_usd AS double)) AS amount_usd,
+        max_by(upper(coalesce(t.token_bought_symbol, '')), try_cast(t.amount_usd AS double)) AS bought_symbol,
+        max_by(upper(coalesce(t.token_sold_symbol, '')), try_cast(t.amount_usd AS double)) AS sold_symbol,
+        2 AS intent_priority
+    FROM dex.trades t
+    LEFT JOIN dex_aggregator.trades a
+      ON a.blockchain = t.blockchain
+     AND a.tx_hash = t.tx_hash
+    WHERE a.tx_hash IS NULL
+      AND t.block_date >= current_date - interval '{days}' day
+      AND t.block_time >= now() - interval '{days}' day
+      AND t.blockchain IN ('ethereum', 'arbitrum', 'base', 'optimism')
+      AND t.tx_from IS NOT NULL
+      AND try_cast(t.amount_usd AS double) BETWEEN {min_trade} AND 10000000
+    GROUP BY t.blockchain, t.tx_hash, t.tx_from
+),
+intents AS (
+    SELECT * FROM aggregator_intents
+    UNION ALL
+    SELECT * FROM raw_non_aggregator_intents
+),
+approved_intents AS (
+    SELECT *
+    FROM intents
+    WHERE bought_symbol IN (SELECT symbol FROM approved_symbols)
+      AND sold_symbol IN (SELECT symbol FROM approved_symbols)
+      AND (
+          bought_symbol IN (SELECT symbol FROM major_symbols)
+          OR sold_symbol IN (SELECT symbol FROM major_symbols)
+      )
+      AND NOT (
+          bought_symbol IN ('USDT', 'USDC', 'DAI', 'USDE', 'USDS')
+          AND sold_symbol IN ('USDT', 'USDC', 'DAI', 'USDE', 'USDS')
+      )
+),
+sandwich_wallets AS (
+    SELECT DISTINCT blockchain, tx_from AS wallet
+    FROM dex.sandwiches
+    WHERE block_month >= date_trunc('month', current_date - interval '{days}' day)
+      AND block_time >= now() - interval '{days}' day
+      AND blockchain IN ('ethereum', 'arbitrum', 'base', 'optimism')
+      AND tx_from IS NOT NULL
+),
+clean_intents AS (
+    SELECT s.*
+    FROM approved_intents s
+    WHERE NOT EXISTS (
+          SELECT 1
+          FROM labels.addresses l
+          WHERE l.blockchain = s.blockchain
+            AND l.address = s.wallet
+            AND lower(l.category) IN (
+                'cex', 'bridge', 'mev', 'bot', 'contract', 'token_contract',
+                'oracle', 'dex', 'dao', 'nft', 'lending'
+            )
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM sandwich_wallets mev
+          WHERE mev.blockchain = s.blockchain
+            AND mev.wallet = s.wallet
+      )
+),
+wallet_stats AS (
+    SELECT
+        wallet,
+        count(*) AS meaningful_swap_count,
+        count(DISTINCT date_trunc('week', block_time)) AS active_week_count,
+        count(DISTINCT date(block_time)) AS active_day_count,
+        sum(amount_usd) AS approved_notional_usd,
+        avg(amount_usd) AS average_swap_usd,
+        max(daily_swaps) AS maximum_daily_swaps,
+        count(DISTINCT blockchain) AS active_chain_count,
+        count(DISTINCT IF(bought_symbol IN (SELECT symbol FROM major_symbols), bought_symbol, NULL)) +
+        count(DISTINCT IF(sold_symbol IN (SELECT symbol FROM major_symbols), sold_symbol, NULL)) AS distinct_major_assets,
+        array_agg(DISTINCT blockchain) AS active_chains,
+        min(block_time) AS first_trade_utc,
+        max(block_time) AS last_trade_utc
+    FROM (
+        SELECT
+            t.*,
+            count(*) OVER (PARTITION BY wallet, date(block_time)) AS daily_swaps
+        FROM clean_intents t
+    )
+    GROUP BY wallet
+    HAVING count(*) >= {min_swaps}
+       AND count(DISTINCT date_trunc('week', block_time)) >= {min_active_weeks}
+       AND sum(amount_usd) >= {min_notional}
+       AND count(*) <= {max_swaps}
+       AND max(daily_swaps) <= 80
+)
+SELECT
+    concat('0x', lower(to_hex(wallet))) AS wallet_address,
+    meaningful_swap_count,
+    active_week_count,
+    active_day_count,
+    approved_notional_usd,
+    average_swap_usd,
+    maximum_daily_swaps,
+    distinct_major_assets,
+    cast(null AS double) AS current_copyable_value_usd,
+    active_chain_count,
+    active_chains,
+    first_trade_utc,
+    last_trade_utc
+FROM wallet_stats
+ORDER BY active_week_count DESC, approved_notional_usd DESC, meaningful_swap_count DESC
+LIMIT {limit}
+"""
+
+
 def wait_with_progress(seconds: int, reason: str) -> None:
     for remaining in range(seconds, 0, -1):
         if remaining == seconds or remaining % 10 == 0 or remaining <= 5:
@@ -354,9 +533,9 @@ def execute_dune_sql(
 ) -> list[dict[str, Any]]:
     submitted = dune_request_with_402_retry(
         "POST",
-        "sql/execute",
+        f"sql/execute?performance={os.environ.get('DUNE_PERFORMANCE', 'medium')}",
         api_key,
-        {"sql": sql},
+        {"sql": sql, "performance": os.environ.get("DUNE_PERFORMANCE", "medium")},
         retry_402,
         retry_402_delay,
         retry_402_max,
@@ -680,6 +859,140 @@ def calculate_fifo(
     return trade_rows, closed, summary_rows, wallet_rows
 
 
+def build_period_leaderboard(
+    trade_rows: list[dict[str, Any]],
+    closed_rows: list[dict[str, Any]],
+    wallet_rows: list[dict[str, str]],
+    period_days: int,
+    min_capital_usd: Decimal,
+    min_pnl_pct: Decimal,
+    max_no_basis_pct: Decimal,
+) -> list[dict[str, str]]:
+    cutoff = datetime.now(timezone.utc).replace(microsecond=0) - timedelta_days(period_days)
+    wallet_open_cost = {row["wallet"]: dec(row.get("open_cost_usd")) for row in wallet_rows}
+    stats: dict[str, dict[str, Any]] = {}
+
+    def item(wallet: str) -> dict[str, Any]:
+        return stats.setdefault(
+            wallet,
+            {
+                "wallet": wallet,
+                "buy_usd": Decimal("0"),
+                "sell_usd": Decimal("0"),
+                "trade_count": 0,
+                "buy_count": 0,
+                "sell_count": 0,
+                "closed_count": 0,
+                "active_days": set(),
+                "assets": set(),
+                "realized_pnl_usd": Decimal("0"),
+                "cost_basis_usd": Decimal("0"),
+                "no_basis_sell_usd": Decimal("0"),
+                "winning_closes": 0,
+                "losing_closes": 0,
+            },
+        )
+
+    for row in trade_rows:
+        when = dt(str(row["time"]))
+        if when < cutoff:
+            continue
+        wallet = str(row["wallet"])
+        entry = item(wallet)
+        usd = dec(row.get("usd"))
+        entry["trade_count"] += 1
+        entry["active_days"].add(when.date().isoformat())
+        entry["assets"].add(str(row.get("asset", "")))
+        if row.get("side") == "BUY":
+            entry["buy_usd"] += usd
+            entry["buy_count"] += 1
+        elif row.get("side") == "SELL":
+            entry["sell_usd"] += usd
+            entry["sell_count"] += 1
+
+    for row in closed_rows:
+        when = dt(str(row["time"]))
+        if when < cutoff:
+            continue
+        wallet = str(row["wallet"])
+        entry = item(wallet)
+        no_basis = dec(row.get("sell_qty_without_basis"))
+        if row.get("note") in {"SELL_WITHOUT_PRIOR_BUY_IN_WINDOW", "PARTIAL_NO_BASIS"} and no_basis > 0:
+            entry["no_basis_sell_usd"] += dec(row.get("proceeds_usd"))
+        if row.get("realized_pnl_usd") == "":
+            continue
+        pnl = dec(row.get("realized_pnl_usd"))
+        entry["realized_pnl_usd"] += pnl
+        entry["cost_basis_usd"] += dec(row.get("cost_basis_usd"))
+        entry["closed_count"] += 1
+        if pnl > 0:
+            entry["winning_closes"] += 1
+        elif pnl < 0:
+            entry["losing_closes"] += 1
+
+    rows: list[dict[str, str]] = []
+    for entry in stats.values():
+        wallet = str(entry["wallet"])
+        buy_usd = dec(entry["buy_usd"])
+        sell_usd = dec(entry["sell_usd"])
+        pnl = dec(entry["realized_pnl_usd"])
+        cost_basis = dec(entry["cost_basis_usd"])
+        open_cost = wallet_open_cost.get(wallet, Decimal("0"))
+        capital_floor = max(min_capital_usd, open_cost, cost_basis)
+        closed_count = int(entry["closed_count"])
+        total_closes = int(entry["winning_closes"]) + int(entry["losing_closes"])
+        no_basis_pct = (dec(entry["no_basis_sell_usd"]) / sell_usd * Decimal("100")) if sell_usd > 0 else Decimal("0")
+        pnl_pct_on_capital = (pnl / capital_floor * Decimal("100")) if capital_floor > 0 else Decimal("0")
+        pnl_pct_on_cost = (pnl / cost_basis * Decimal("100")) if cost_basis > 0 else Decimal("0")
+        qualifies = (
+            pnl > 0
+            and pnl_pct_on_capital >= min_pnl_pct
+            and closed_count > 0
+            and no_basis_pct <= max_no_basis_pct
+            and buy_usd + sell_usd >= min_capital_usd
+        )
+        rows.append(
+            {
+                "wallet": wallet,
+                "period_days": str(period_days),
+                "qualifies": "yes" if qualifies else "no",
+                "realized_pnl_usd": money(pnl),
+                "realized_pnl_pct_on_capital_floor": pct(pnl_pct_on_capital),
+                "realized_pnl_pct_on_closed_cost": pct(pnl_pct_on_cost),
+                "capital_floor_usd": money(capital_floor),
+                "open_cost_usd": money(open_cost),
+                "closed_cost_basis_usd": money(cost_basis),
+                "buy_usd": money(buy_usd),
+                "sell_usd": money(sell_usd),
+                "trade_count": str(entry["trade_count"]),
+                "buy_count": str(entry["buy_count"]),
+                "sell_count": str(entry["sell_count"]),
+                "closed_count": str(closed_count),
+                "win_rate_pct": pct((Decimal(entry["winning_closes"]) / Decimal(total_closes) * Decimal("100")) if total_closes else Decimal("0")),
+                "active_days": str(len(entry["active_days"])),
+                "distinct_assets": str(len([asset for asset in entry["assets"] if asset])),
+                "no_basis_sell_usd": money(dec(entry["no_basis_sell_usd"])),
+                "no_basis_sell_pct": pct(no_basis_pct),
+            }
+        )
+
+    rows.sort(
+        key=lambda row: (
+            row["qualifies"] == "yes",
+            dec(row["realized_pnl_pct_on_capital_floor"]),
+            dec(row["realized_pnl_usd"]),
+        ),
+        reverse=True,
+    )
+    return rows
+
+
+def timedelta_days(days: int):
+    from datetime import timedelta
+
+    return timedelta(days=max(1, days))
+
+
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not rows:
@@ -700,6 +1013,7 @@ def main() -> int:
     parser.add_argument("--wallet", action="append", default=[], help="Wallet address. Can be repeated.")
     parser.add_argument("--wallet-file", help="Text file with one wallet per line.")
     parser.add_argument("--discover", action="store_true", help="Discover wallets first, then run PnL verification.")
+    parser.add_argument("--high-pnl-discover", action="store_true", help="Use the larger high-PnL candidate discovery funnel.")
     parser.add_argument("--days", type=int, default=90, help="Lookback window in days. Default: 90.")
     parser.add_argument("--min-trade-usd", default="100", help="Minimum DEX trade size to include. Default: 100.")
     parser.add_argument("--discover-min-trade-usd", default="1000", help="Minimum trade USD for discovery. Default: 1000.")
@@ -708,6 +1022,11 @@ def main() -> int:
     parser.add_argument("--min-swaps", type=int, default=3, help="Discovery meaningful swap threshold. Default: 3.")
     parser.add_argument("--min-balance-usd", default="50000", help="Discovery current copyable balance minimum. Default: 50000.")
     parser.add_argument("--max-balance-usd", default="100000000", help="Discovery current copyable balance maximum. Default: 100000000.")
+    parser.add_argument("--min-notional-usd", default="50000", help="High-PnL discovery minimum approved notional USD. Default: 50000.")
+    parser.add_argument("--min-capital-usd", default="30000", help="Capital floor for high-PnL percentage and filtering. Default: 30000.")
+    parser.add_argument("--target-90d-pct", default="10", help="High-PnL 90-day target percentage. Default: 10.")
+    parser.add_argument("--target-30d-pct", default="3", help="High-PnL 30-day target percentage. Default: 3.")
+    parser.add_argument("--max-no-basis-pct", default="15", help="Maximum no-basis sell percentage for high-PnL qualification. Default: 15.")
     parser.add_argument("--pnl-chunk-size", type=int, default=25, help="Wallets per PnL Dune query. Default: 25.")
     parser.add_argument("--retry-402", action="store_true", help="Keep retrying Dune 402 datapoint-limit responses.")
     parser.add_argument("--retry-402-delay", type=int, default=60, help="Seconds to wait between Dune 402 retries.")
@@ -735,8 +1054,19 @@ def main() -> int:
             wallets.extend(normalize_wallet(line) for line in handle if line.strip() and not line.startswith("#"))
     discovered_rows: list[dict[str, Any]] = []
     discovery_sql = ""
-    if args.discover:
-        discovery_sql = build_discovery_sql(
+    if args.discover or args.high_pnl_discover:
+        if args.high_pnl_discover:
+            discovery_sql = build_high_pnl_discovery_sql(
+                max(1, min(args.days, 365)),
+                dec(args.discover_min_trade_usd),
+                max(1, args.min_active_weeks),
+                max(1, args.min_swaps),
+                max(1, args.discover_limit),
+                dec(args.min_notional_usd),
+            )
+            discovery_label = "High-PnL discovery"
+        else:
+            discovery_sql = build_discovery_sql(
             max(1, min(args.days, 365)),
             dec(args.discover_min_trade_usd),
             max(1, args.min_active_weeks),
@@ -744,11 +1074,12 @@ def main() -> int:
             max(1, min(args.discover_limit, 500)),
             dec(args.min_balance_usd),
             dec(args.max_balance_usd),
-        )
+            )
+            discovery_label = "Discovery"
         print(
-            "Discovery: "
+            f"{discovery_label}: "
             f"days={args.days}, limit={args.discover_limit}, "
-            f"balance=${args.min_balance_usd}-${args.max_balance_usd}, "
+            f"notional>=${args.min_notional_usd}, "
             f"active_weeks>={args.min_active_weeks}, swaps>={args.min_swaps}",
             flush=True,
         )
@@ -827,6 +1158,39 @@ def main() -> int:
     ]
     write_csv(out_dir / "positive_wallets.csv", positive_wallets)
 
+    high_pnl_90d = build_period_leaderboard(
+        trade_rows,
+        closed_rows,
+        wallet_rows,
+        90,
+        dec(args.min_capital_usd),
+        dec(args.target_90d_pct),
+        dec(args.max_no_basis_pct),
+    )
+    high_pnl_30d = build_period_leaderboard(
+        trade_rows,
+        closed_rows,
+        wallet_rows,
+        30,
+        dec(args.min_capital_usd),
+        dec(args.target_30d_pct),
+        dec(args.max_no_basis_pct),
+    )
+    write_csv(out_dir / "high_pnl_90d.csv", high_pnl_90d)
+    write_csv(out_dir / "high_pnl_30d.csv", high_pnl_30d)
+    qualifying_90d = {row["wallet"] for row in high_pnl_90d if row["qualifies"] == "yes"}
+    qualifying_30d = {row["wallet"] for row in high_pnl_30d if row["qualifies"] == "yes"}
+    overlap = [
+        {
+            "wallet": wallet,
+            "qualifies_90d": "yes",
+            "qualifies_30d": "yes",
+            "zerion_url": f"https://app.zerion.io/{wallet}/overview",
+        }
+        for wallet in sorted(qualifying_90d & qualifying_30d)
+    ]
+    write_csv(out_dir / "high_pnl_overlap.csv", overlap)
+
     print(f"Report directory: {out_dir}")
     print("\nTop realized PnL rows:")
     ranked = sorted(summary_rows, key=lambda row: dec(row["realized_pnl_usd"]), reverse=True)
@@ -849,6 +1213,28 @@ def main() -> int:
         print(
             f"{row['wallet']}: pnl ${row['realized_pnl_usd']} "
             f"({row['realized_pnl_pct_on_buys']}% on buys), buys ${row['buy_usd']}, sells ${row['sell_usd']}"
+        )
+    print(
+        f"\nHigh-PnL qualified wallets: "
+        f"90d {len(qualifying_90d)} at >={args.target_90d_pct}% | "
+        f"30d {len(qualifying_30d)} at >={args.target_30d_pct}% | "
+        f"overlap {len(overlap)}"
+    )
+    print("\nTop 90d high-PnL leaderboard:")
+    for row in high_pnl_90d[:20]:
+        print(
+            f"{row['wallet']}: qualifies={row['qualifies']} pnl ${row['realized_pnl_usd']} "
+            f"({row['realized_pnl_pct_on_capital_floor']}% on capital floor), "
+            f"capital ${row['capital_floor_usd']}, no-basis {row['no_basis_sell_pct']}%, "
+            f"trades {row['trade_count']}"
+        )
+    print("\nTop 30d high-PnL leaderboard:")
+    for row in high_pnl_30d[:20]:
+        print(
+            f"{row['wallet']}: qualifies={row['qualifies']} pnl ${row['realized_pnl_usd']} "
+            f"({row['realized_pnl_pct_on_capital_floor']}% on capital floor), "
+            f"capital ${row['capital_floor_usd']}, no-basis {row['no_basis_sell_pct']}%, "
+            f"trades {row['trade_count']}"
         )
     return 0
 
