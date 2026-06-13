@@ -259,7 +259,7 @@ pre {
 
 .tab-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 0;
   padding: 10px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.16);
@@ -307,6 +307,11 @@ pre {
   text-align: left;
   border-radius: 8px;
   padding: 10px;
+}
+
+.scan-list button.active-list-row {
+  border-color: rgba(34, 211, 238, 0.62);
+  background: rgba(14, 165, 233, 0.18);
 }
 
 .wallet-row {
@@ -593,6 +598,121 @@ input {
   border-radius: 6px;
   background: #0a1b2e;
   color: #bae6fd;
+}
+
+.hyperliquid-lab {
+  display: grid;
+  gap: 10px;
+}
+
+.hyper-trader-list {
+  display: grid;
+  gap: 8px;
+}
+
+.hyper-trader-row {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  text-align: left;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.58);
+  color: #e5eefc;
+}
+
+.hyper-trader-row.selected {
+  border-color: rgba(34, 211, 238, 0.62);
+  background: rgba(14, 165, 233, 0.16);
+}
+
+.hyper-trader-row span,
+.hyper-trader-row small,
+.hyper-summary-grid span {
+  color: #91a6bf;
+}
+
+.hyper-trader-row strong,
+.hyper-trader-row span,
+.hyper-trader-row small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hyper-detail {
+  display: grid;
+  gap: 8px;
+}
+
+.hyper-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.hyper-summary-grid > div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.45);
+}
+
+.hyper-summary-grid strong {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.compact-table {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.table-head,
+.table-row {
+  display: grid;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.table-head {
+  color: #7dd3fc;
+  background: rgba(14, 165, 233, 0.12);
+}
+
+.table-row {
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(15, 23, 42, 0.48);
+  color: #cbd5e1;
+}
+
+.table-head.four,
+.table-row.four {
+  grid-template-columns: 0.8fr 0.7fr 1fr 1fr;
+}
+
+.table-head.five,
+.table-row.five {
+  grid-template-columns: 0.7fr 0.6fr 0.7fr 1.4fr 0.9fr;
+}
+
+.table-head span,
+.table-row span,
+.table-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-panel {

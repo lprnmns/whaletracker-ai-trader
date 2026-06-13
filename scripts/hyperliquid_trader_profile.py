@@ -22,6 +22,7 @@ actually copyable before wiring it into the web UI.
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import json
 import time
@@ -37,6 +38,8 @@ from urllib.request import Request, urlopen
 
 INFO_URL = "https://api.hyperliquid.xyz/info"
 MAX_FILLS_PER_REQUEST = 2000
+REQUEST_DELAY_SECONDS = 0.05
+MAX_REQUESTS_PER_ADDRESS = 350
 COPYABLE_MAJOR_COINS = {
     "BTC",
     "ETH",
@@ -56,6 +59,8 @@ COPYABLE_MAJOR_COINS = {
     "PENDLE",
     "UNI",
 }
+
+POSITION_EPSILON = Decimal("0.00000001")
 
 
 @dataclass
@@ -103,7 +108,7 @@ def normalize_address(value: str) -> str:
 def post_info(
     payload: dict[str, Any],
     stats: ApiStats,
-    sleep_seconds: float = 0.05,
+    sleep_seconds: float | None = None,
     max_retries: int = 6,
 ) -> Any:
     body = json.dumps(payload).encode("utf-8")
@@ -121,8 +126,9 @@ def post_info(
         try:
             with urlopen(request, timeout=60) as response:
                 stats.requests += 1
-                if sleep_seconds > 0:
-                    time.sleep(sleep_seconds)
+                delay = REQUEST_DELAY_SECONDS if sleep_seconds is None else sleep_seconds
+                if delay > 0:
+                    time.sleep(delay)
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
@@ -153,6 +159,11 @@ def fetch_fills_range(
 ) -> list[dict[str, Any]]:
     if end_ms <= start_ms:
         return []
+    if MAX_REQUESTS_PER_ADDRESS and stats.requests + stats.retries >= MAX_REQUESTS_PER_ADDRESS:
+        raise RuntimeError(
+            f"Address request budget exceeded ({MAX_REQUESTS_PER_ADDRESS}); "
+            "profile is too dense for this run."
+        )
     fills = post_info(
         {
             "type": "userFillsByTime",
@@ -217,6 +228,216 @@ def fill_rows(fills: list[dict[str, Any]]) -> list[dict[str, str]]:
             }
         )
     return rows
+
+
+def sign(value: Decimal) -> int:
+    if value > POSITION_EPSILON:
+        return 1
+    if value < -POSITION_EPSILON:
+        return -1
+    return 0
+
+
+def market_type(coin: str) -> str:
+    if coin in COPYABLE_MAJOR_COINS:
+        return "PERP_MAJOR"
+    if coin.startswith("@") or coin.startswith("#") or ":" in coin:
+        return "SPOT_OR_NON_STANDARD"
+    return "PERP_OTHER"
+
+
+def account_history_points(portfolio: list[Any]) -> list[tuple[int, Decimal]]:
+    points: dict[int, Decimal] = {}
+    for item in portfolio:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+        _, data = item
+        if not isinstance(data, dict):
+            continue
+        for ts, value in data.get("accountValueHistory", []):
+            points[int(ts)] = dec(value)
+    return sorted(points.items(), key=lambda row: row[0])
+
+
+def nearest_account_value(points: list[tuple[int, Decimal]], timestamp_ms: int) -> Decimal:
+    if not points:
+        return Decimal("0")
+    times = [point[0] for point in points]
+    index = bisect.bisect_left(times, timestamp_ms)
+    if index <= 0:
+        return points[0][1]
+    if index >= len(points):
+        return points[-1][1]
+    before = points[index - 1]
+    after = points[index]
+    return before[1] if timestamp_ms - before[0] <= after[0] - timestamp_ms else after[1]
+
+
+def action_for_position(start_position: Decimal, end_position: Decimal) -> str:
+    start_sign = sign(start_position)
+    end_sign = sign(end_position)
+    if start_sign == 0 and end_sign != 0:
+        return "OPEN_LONG" if end_sign > 0 else "OPEN_SHORT"
+    if start_sign != 0 and end_sign == 0:
+        return "CLOSE_LONG" if start_sign > 0 else "CLOSE_SHORT"
+    if start_sign != 0 and end_sign != 0 and start_sign != end_sign:
+        return "FLIP_SHORT_TO_LONG" if end_sign > 0 else "FLIP_LONG_TO_SHORT"
+    if abs(end_position) > abs(start_position):
+        return "INCREASE_LONG" if end_sign > 0 else "INCREASE_SHORT"
+    if abs(end_position) < abs(start_position):
+        return "REDUCE_LONG" if start_sign > 0 else "REDUCE_SHORT"
+    return "NO_POSITION_CHANGE"
+
+
+def build_position_history(
+    fills: list[dict[str, Any]],
+    portfolio: list[Any],
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    account_points = account_history_points(portfolio)
+    events: list[dict[str, str]] = []
+    closed_positions: list[dict[str, str]] = []
+    open_rounds: dict[str, dict[str, Any]] = {}
+
+    def start_round(coin: str, timestamp_ms: int, side: str, price: Decimal, qty: Decimal, notional: Decimal, balance_pct: Decimal) -> None:
+        open_rounds[coin] = {
+            "coin": coin,
+            "side": side,
+            "opened_at_ms": timestamp_ms,
+            "entry_notional": notional,
+            "entry_qty": abs(qty),
+            "weighted_entry": price * abs(qty),
+            "max_abs_qty": abs(qty),
+            "max_notional": notional,
+            "max_balance_pct": balance_pct,
+            "closed_pnl": Decimal("0"),
+            "fees": Decimal("0"),
+            "fill_count": 1,
+        }
+
+    def increase_round(coin: str, price: Decimal, qty: Decimal, notional: Decimal, balance_pct: Decimal, fee: Decimal) -> None:
+        item = open_rounds.get(coin)
+        if not item:
+            return
+        abs_qty = abs(qty)
+        item["entry_notional"] += notional
+        item["entry_qty"] += abs_qty
+        item["weighted_entry"] += price * abs_qty
+        item["max_abs_qty"] = max(item["max_abs_qty"], abs_qty)
+        item["max_notional"] = max(item["max_notional"], notional)
+        item["max_balance_pct"] = max(item["max_balance_pct"], balance_pct)
+        item["fees"] += fee
+        item["fill_count"] += 1
+
+    def close_round(
+        coin: str,
+        timestamp_ms: int,
+        price: Decimal,
+        qty: Decimal,
+        notional: Decimal,
+        closed_pnl: Decimal,
+        fee: Decimal,
+        end_position: Decimal,
+        full_close: bool,
+    ) -> None:
+        item = open_rounds.get(coin)
+        if not item:
+            return
+        item["closed_pnl"] += closed_pnl
+        item["fees"] += fee
+        item["fill_count"] += 1
+        if not full_close:
+            return
+
+        entry_qty = item["entry_qty"]
+        avg_entry = item["weighted_entry"] / entry_qty if entry_qty > 0 else Decimal("0")
+        holding_hours = Decimal(timestamp_ms - item["opened_at_ms"]) / Decimal(3_600_000)
+        net_pnl = item["closed_pnl"] - item["fees"]
+        closed_positions.append(
+            {
+                "coin": coin,
+                "market_type": market_type(coin),
+                "side": item["side"],
+                "opened_at": iso_ms(int(item["opened_at_ms"])),
+                "closed_at": iso_ms(timestamp_ms),
+                "holding_hours": money(holding_hours),
+                "holding_days": money(holding_hours / Decimal("24")),
+                "avg_entry_price": number(avg_entry),
+                "avg_exit_price": number(price),
+                "entry_notional_usd": money(item["entry_notional"]),
+                "exit_notional_usd": money(notional),
+                "max_single_fill_notional_usd": money(item["max_notional"]),
+                "max_fill_balance_pct": pct(item["max_balance_pct"] / Decimal("100")),
+                "closed_pnl_usd": money(item["closed_pnl"]),
+                "fees_usd": money(item["fees"]),
+                "net_pnl_usd": money(net_pnl),
+                "return_on_entry_notional_pct": pct(net_pnl / item["entry_notional"] if item["entry_notional"] > 0 else Decimal("0")),
+                "fill_count": str(item["fill_count"]),
+                "copyable_major": "yes" if coin in COPYABLE_MAJOR_COINS else "no",
+                "end_position": number(end_position),
+            }
+        )
+        del open_rounds[coin]
+
+    for fill in fills:
+        timestamp_ms = int(fill.get("time") or 0)
+        coin = str(fill.get("coin") or "")
+        px = dec(fill.get("px"))
+        size = dec(fill.get("sz"))
+        notional = px * size
+        fee = dec(fill.get("fee"))
+        closed_pnl = dec(fill.get("closedPnl"))
+        start_position = dec(fill.get("startPosition"))
+        delta = size if fill.get("side") == "B" else -size
+        end_position = start_position + delta
+        action = action_for_position(start_position, end_position)
+        account_value = nearest_account_value(account_points, timestamp_ms)
+        balance_pct = (notional / account_value * Decimal("100")) if account_value > 0 else Decimal("0")
+        direction = str(fill.get("dir") or "")
+
+        events.append(
+            {
+                "time": iso_ms(timestamp_ms),
+                "coin": coin,
+                "market_type": market_type(coin),
+                "action": action,
+                "hyperliquid_direction": direction,
+                "side": str(fill.get("side") or ""),
+                "price": number(px),
+                "size": number(size),
+                "notional_usd": money(notional),
+                "account_value_usd": money(account_value),
+                "fill_balance_pct": pct(balance_pct / Decimal("100")),
+                "start_position": number(start_position),
+                "end_position": number(end_position),
+                "closed_pnl_usd": money(closed_pnl),
+                "fee_usd": money(fee),
+                "net_closed_pnl_usd": money(closed_pnl - fee),
+                "order_id": str(fill.get("oid") or ""),
+                "trade_id": str(fill.get("tid") or ""),
+                "hash": str(fill.get("hash") or ""),
+                "copyable_major": "yes" if coin in COPYABLE_MAJOR_COINS else "no",
+            }
+        )
+
+        start_s = sign(start_position)
+        end_s = sign(end_position)
+        if start_s == 0 and end_s != 0:
+            start_round(coin, timestamp_ms, "LONG" if end_s > 0 else "SHORT", px, end_position, notional, balance_pct)
+        elif start_s != 0 and end_s == 0:
+            close_round(coin, timestamp_ms, px, size, notional, closed_pnl, fee, end_position, True)
+        elif start_s != 0 and end_s != 0 and start_s != end_s:
+            close_round(coin, timestamp_ms, px, size, notional, closed_pnl, fee, Decimal("0"), True)
+            start_round(coin, timestamp_ms, "LONG" if end_s > 0 else "SHORT", px, end_position, px * abs(end_position), balance_pct)
+        elif abs(end_position) > abs(start_position):
+            if coin not in open_rounds:
+                start_round(coin, timestamp_ms, "LONG" if end_s > 0 else "SHORT", px, end_position, notional, balance_pct)
+            else:
+                increase_round(coin, px, delta, notional, balance_pct, fee)
+        elif abs(end_position) < abs(start_position):
+            close_round(coin, timestamp_ms, px, size, notional, closed_pnl, fee, end_position, False)
+
+    closed_positions.sort(key=lambda row: dec(row["net_pnl_usd"]), reverse=True)
+    return events, closed_positions
 
 
 def summarize_by_coin(fills: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -348,7 +569,12 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
         path.write_text("", encoding="utf-8")
         return
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        fieldnames: list[str] = []
+        for row in rows:
+            for key in row.keys():
+                if key not in fieldnames:
+                    fieldnames.append(key)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -380,6 +606,7 @@ def build_summary(
     fills: list[dict[str, Any]],
     position_rows: list[dict[str, str]],
     coin_rows: list[dict[str, str]],
+    closed_position_rows: list[dict[str, str]],
     api_stats: ApiStats,
     days: int,
 ) -> dict[str, Any]:
@@ -397,6 +624,16 @@ def build_summary(
     copyable_ratio = copyable_notional / notional if notional > 0 else Decimal("0")
     active_copyable_positions = sum(1 for row in position_rows if row["copyable_major"] == "yes")
     active_positions = len(position_rows)
+    closed_positions = len(closed_position_rows)
+    winning_positions = sum(1 for row in closed_position_rows if dec(row.get("net_pnl_usd")) > 0)
+    copyable_closed_positions = [row for row in closed_position_rows if row.get("copyable_major") == "yes"]
+    copyable_net_position_pnl = sum((dec(row.get("net_pnl_usd")) for row in copyable_closed_positions), Decimal("0"))
+    avg_holding_hours = (
+        sum((dec(row.get("holding_hours")) for row in closed_position_rows), Decimal("0")) / Decimal(closed_positions)
+        if closed_positions
+        else Decimal("0")
+    )
+    largest_balance_pct = max((dec(row.get("max_fill_balance_pct")) for row in closed_position_rows), default=Decimal("0"))
     return {
         "address": address,
         "days": days,
@@ -408,9 +645,16 @@ def build_summary(
         "active_copyable_positions": active_copyable_positions,
         "fill_count": len(fills),
         "coin_count": len(coin_rows),
+        "closed_position_count": closed_positions,
+        "winning_position_count": winning_positions,
+        "position_win_rate_pct": pct(Decimal(winning_positions) / Decimal(closed_positions) if closed_positions else Decimal("0")),
+        "average_holding_hours": money(avg_holding_hours),
+        "largest_position_fill_balance_pct": number(largest_balance_pct),
         "closed_pnl_usd": money(closed_pnl),
         "fees_usd": money(fees),
         "net_closed_pnl_usd": money(closed_pnl - fees),
+        "copyable_position_net_pnl_usd": money(copyable_net_position_pnl),
+        "copyable_closed_position_count": len(copyable_closed_positions),
         "fill_notional_usd": money(notional),
         "copyable_major_notional_usd": money(copyable_notional),
         "copyable_major_ratio_pct": pct(copyable_ratio),
@@ -452,10 +696,25 @@ def profile_address(address: str, args: argparse.Namespace, root_out: Path) -> d
     positions_out = active_position_rows(state if isinstance(state, dict) else {})
     orders_out = open_order_rows(open_orders if isinstance(open_orders, list) else [])
     portfolio_out = portfolio_rows(portfolio if isinstance(portfolio, list) else [])
-    summary = build_summary(address, state if isinstance(state, dict) else {}, fills, positions_out, coin_out, stats, args.days)
+    position_events_out, closed_positions_out = build_position_history(
+        fills,
+        portfolio if isinstance(portfolio, list) else [],
+    )
+    summary = build_summary(
+        address,
+        state if isinstance(state, dict) else {},
+        fills,
+        positions_out,
+        coin_out,
+        closed_positions_out,
+        stats,
+        args.days,
+    )
 
     out_dir = root_out / address
     write_csv(out_dir / "fills.csv", fills_out)
+    write_csv(out_dir / "position_events.csv", position_events_out)
+    write_csv(out_dir / "closed_positions.csv", closed_positions_out)
     write_csv(out_dir / "coin_summary.csv", coin_out)
     write_csv(out_dir / "active_positions.csv", positions_out)
     write_csv(out_dir / "open_orders.csv", orders_out)
@@ -480,11 +739,17 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=30, help="Fill lookback days. Default: 30.")
     parser.add_argument("--min-split-hours", type=int, default=1, help="Minimum recursive fill split interval. Default: 1.")
     parser.add_argument("--address-delay", type=float, default=1.0, help="Seconds to wait between addresses. Default: 1.")
+    parser.add_argument("--request-delay", type=float, default=0.05, help="Seconds to wait after each Hyperliquid API request. Default: 0.05.")
+    parser.add_argument("--max-requests-per-address", type=int, default=350, help="Skip a trader after this many API requests/retries. 0 disables the cap.")
     parser.add_argument("--min-leaderboard-pnl-usd", default="0")
     parser.add_argument("--min-leaderboard-account-usd", default="0")
     parser.add_argument("--min-leaderboard-volume-usd", default="0")
     parser.add_argument("--out-dir", default="data/reports/hyperliquid_profiles")
     args = parser.parse_args()
+    global REQUEST_DELAY_SECONDS
+    global MAX_REQUESTS_PER_ADDRESS
+    REQUEST_DELAY_SECONDS = max(0, args.request_delay)
+    MAX_REQUESTS_PER_ADDRESS = max(0, args.max_requests_per_address)
 
     addresses = load_addresses(args)
     if not addresses:

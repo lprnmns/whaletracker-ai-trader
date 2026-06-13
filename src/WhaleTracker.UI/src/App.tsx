@@ -158,6 +158,25 @@ type TraderDiscoveryCandidate = {
   lastTradeUtc: string
 }
 
+type HyperliquidRun = {
+  id: string
+  createdAt: string
+  traderCount: number
+  hasSummary: boolean
+}
+
+type HyperliquidTraderSummary = Record<string, string>
+
+type HyperliquidTraderDetail = {
+  address: string
+  summary: HyperliquidTraderSummary
+  activePositions: Array<Record<string, string>>
+  closedPositions: Array<Record<string, string>>
+  positionEvents: Array<Record<string, string>>
+  coinSummary: Array<Record<string, string>>
+  fills: Array<Record<string, string>>
+}
+
 type GraphNode = {
   id: string
   name: string
@@ -182,7 +201,7 @@ type GraphLink = {
   flowExpiresAt?: number
 }
 
-type Tab = 'events' | 'wallets' | 'insider' | 'chat'
+type Tab = 'events' | 'wallets' | 'insider' | 'hyperliquid' | 'chat'
 
 type ChatAiMeta = {
   provider: string
@@ -421,6 +440,11 @@ function App() {
   const [discoveryRuns, setDiscoveryRuns] = useState<TraderDiscoveryRun[]>([])
   const [discoveryCandidates, setDiscoveryCandidates] = useState<TraderDiscoveryCandidate[]>([])
   const [activeDiscoveryRun, setActiveDiscoveryRun] = useState<TraderDiscoveryRun | null>(null)
+  const [hyperRuns, setHyperRuns] = useState<HyperliquidRun[]>([])
+  const [activeHyperRun, setActiveHyperRun] = useState<HyperliquidRun | null>(null)
+  const [hyperTraders, setHyperTraders] = useState<HyperliquidTraderSummary[]>([])
+  const [selectedHyperTrader, setSelectedHyperTrader] = useState<HyperliquidTraderSummary | null>(null)
+  const [hyperTraderDetail, setHyperTraderDetail] = useState<HyperliquidTraderDetail | null>(null)
   const [isDiscoveryRunning, setIsDiscoveryRunning] = useState(false)
   const [isTraderScanRunning, setIsTraderScanRunning] = useState(false)
   const [selected, setSelected] = useState<GraphNode | null>(null)
@@ -589,11 +613,52 @@ function App() {
     }
   }, [])
 
+  const loadHyperRuns = useCallback(async () => {
+    try {
+      const runs = await fetchJson<HyperliquidRun[]>('/api/hyperliquid-reports/runs')
+      setHyperRuns(runs)
+      if (!activeHyperRun && runs.length > 0) {
+        setActiveHyperRun(runs[0])
+        const traders = await fetchJson<HyperliquidTraderSummary[]>(`/api/hyperliquid-reports/runs/${runs[0].id}/traders`)
+        setHyperTraders(traders)
+        setSelectedHyperTrader(traders[0] || null)
+        if (traders[0]?.address) {
+          const detail = await fetchJson<HyperliquidTraderDetail>(`/api/hyperliquid-reports/runs/${runs[0].id}/traders/${traders[0].address}`)
+          setHyperTraderDetail(detail)
+        }
+      }
+    } catch (error) {
+      setAlert(error instanceof Error ? error.message : 'Hyperliquid reports unavailable')
+    }
+  }, [activeHyperRun])
+
+  const loadHyperRunTraders = async (run: HyperliquidRun) => {
+    setActiveHyperRun(run)
+    setHyperTraderDetail(null)
+    setSelectedHyperTrader(null)
+    const traders = await fetchJson<HyperliquidTraderSummary[]>(`/api/hyperliquid-reports/runs/${run.id}/traders`)
+    setHyperTraders(traders)
+    setSelectedHyperTrader(traders[0] || null)
+    if (traders[0]?.address) {
+      setHyperTraderDetail(await fetchJson<HyperliquidTraderDetail>(`/api/hyperliquid-reports/runs/${run.id}/traders/${traders[0].address}`))
+    }
+  }
+
+  const loadHyperTraderDetail = async (trader: HyperliquidTraderSummary) => {
+    if (!activeHyperRun || !trader.address) return
+    setSelectedHyperTrader(trader)
+    setHyperTraderDetail(await fetchJson<HyperliquidTraderDetail>(`/api/hyperliquid-reports/runs/${activeHyperRun.id}/traders/${trader.address}`))
+  }
+
   useEffect(() => {
     loadMissionState()
     const timer = window.setInterval(loadMissionState, 30000)
     return () => window.clearInterval(timer)
   }, [loadMissionState])
+
+  useEffect(() => {
+    loadHyperRuns()
+  }, [])
 
   useEffect(() => {
     const connection = new HubConnectionBuilder()
@@ -1193,6 +1258,7 @@ function App() {
           <button className={activeTab === 'events' ? 'active' : ''} onClick={() => setActiveTab('events')}>Events</button>
           <button className={activeTab === 'wallets' ? 'active' : ''} onClick={() => setActiveTab('wallets')}>Wallets</button>
           <button className={activeTab === 'insider' ? 'active' : ''} onClick={() => setActiveTab('insider')}>Trader Finder</button>
+          <button className={activeTab === 'hyperliquid' ? 'active' : ''} onClick={() => setActiveTab('hyperliquid')}>Hyperliquid</button>
           <button className={activeTab === 'chat' ? 'active' : ''} onClick={() => setActiveTab('chat')}>Chat</button>
         </nav>
 
@@ -1408,6 +1474,106 @@ function App() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {activeTab === 'hyperliquid' && (
+            <div className="hyperliquid-lab">
+              <div className="section-heading">
+                <strong>Hyperliquid profiles</strong>
+                <span>Review active leaderboard traders by current positions, reconstructed closed positions, and copyable major PnL.</span>
+              </div>
+              <button className="primary-action" onClick={loadHyperRuns}>
+                <RefreshCw size={16} /> Refresh reports
+              </button>
+              <div className="scan-list">
+                {hyperRuns.length === 0 && <p className="muted">No Hyperliquid profile reports found yet.</p>}
+                {hyperRuns.map((run) => (
+                  <button key={run.id} className={activeHyperRun?.id === run.id ? 'active-list-row' : ''} onClick={() => loadHyperRunTraders(run)}>
+                    {run.id} · {run.traderCount} traders · {run.hasSummary ? 'summary ready' : 'partial'}
+                  </button>
+                ))}
+              </div>
+
+              <div className="section-heading">
+                <strong>Trader shortlist</strong>
+                <span>{activeHyperRun ? activeHyperRun.id : 'Select a report run'} · sorted by copyable closed-position PnL.</span>
+              </div>
+              <div className="hyper-trader-list">
+                {hyperTraders.slice(0, 50).map((trader) => (
+                  <button
+                    key={trader.address}
+                    className={selectedHyperTrader?.address === trader.address ? 'hyper-trader-row selected' : 'hyper-trader-row'}
+                    onClick={() => loadHyperTraderDetail(trader)}
+                  >
+                    <strong>{shortAddress(trader.address)}</strong>
+                    <span>{trader.verdict || 'review'} · account ${trader.account_value_usd || trader.current_account_value_usd || '--'}</span>
+                    <small>
+                      net ${trader.net_closed_pnl_usd || '--'} · copyable ${trader.copyable_position_net_pnl_usd || '--'} · closed {trader.closed_position_count || '0'}
+                    </small>
+                  </button>
+                ))}
+              </div>
+
+              {hyperTraderDetail && (
+                <div className="hyper-detail">
+                  <div className="section-heading">
+                    <strong>{shortAddress(hyperTraderDetail.address)} detail</strong>
+                    <span>{hyperTraderDetail.summary.verdict || 'review'} · fills {hyperTraderDetail.summary.fill_count || '0'} · active positions {hyperTraderDetail.summary.active_positions || '0'}</span>
+                  </div>
+                  <div className="hyper-summary-grid">
+                    <div><span>Account</span><strong>${hyperTraderDetail.summary.account_value_usd || '--'}</strong></div>
+                    <div><span>Net PnL</span><strong>${hyperTraderDetail.summary.net_closed_pnl_usd || '--'}</strong></div>
+                    <div><span>Copyable PnL</span><strong>${hyperTraderDetail.summary.copyable_position_net_pnl_usd || '--'}</strong></div>
+                    <div><span>Win rate</span><strong>{hyperTraderDetail.summary.position_win_rate_pct || '--'}%</strong></div>
+                  </div>
+
+                  <div className="section-heading">
+                    <strong>Active positions</strong>
+                    <span>Current Hyperliquid perp exposure.</span>
+                  </div>
+                  <div className="compact-table">
+                    <div className="table-head four"><span>Coin</span><span>Side</span><span>Value</span><span>uPnL</span></div>
+                    {hyperTraderDetail.activePositions.slice(0, 12).map((row, index) => (
+                      <div className="table-row four" key={`${row.coin}-${index}`}>
+                        <span>{row.coin}</span><span>{row.side}</span><span>${row.position_value_usd}</span><span>${row.unrealized_pnl_usd}</span>
+                      </div>
+                    ))}
+                    {hyperTraderDetail.activePositions.length === 0 && <p className="muted">No active position in this report.</p>}
+                  </div>
+
+                  <div className="section-heading">
+                    <strong>Closed positions</strong>
+                    <span>Reconstructed exchange-style history from fills.</span>
+                  </div>
+                  <div className="compact-table">
+                    <div className="table-head five"><span>Coin</span><span>Side</span><span>Hold</span><span>Entry → Exit</span><span>Net</span></div>
+                    {hyperTraderDetail.closedPositions.slice(0, 30).map((row, index) => (
+                      <div className="table-row five" key={`${row.coin}-${row.closed_at}-${index}`}>
+                        <span>{row.coin}</span>
+                        <span>{row.side}</span>
+                        <span>{row.holding_days}d</span>
+                        <span>{Number(row.avg_entry_price || 0).toFixed(4)} → {Number(row.avg_exit_price || 0).toFixed(4)}</span>
+                        <strong>${row.net_pnl_usd}</strong>
+                      </div>
+                    ))}
+                    {hyperTraderDetail.closedPositions.length === 0 && <p className="muted">No fully closed positions reconstructed in this window.</p>}
+                  </div>
+
+                  <div className="section-heading">
+                    <strong>Coin summary</strong>
+                    <span>Raw fill-level realized PnL by market.</span>
+                  </div>
+                  <div className="compact-table">
+                    <div className="table-head four"><span>Coin</span><span>Fills</span><span>Notional</span><span>Net</span></div>
+                    {hyperTraderDetail.coinSummary.slice(0, 20).map((row, index) => (
+                      <div className="table-row four" key={`${row.coin}-${index}`}>
+                        <span>{row.coin}</span><span>{row.fill_count}</span><span>${row.notional_usd}</span><strong>${row.net_closed_pnl_usd}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

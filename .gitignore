@@ -15,6 +15,7 @@ src/WhaleTracker.API/data/
 
 # Runtime/generated data
 data/benchmarks/
+data/reports/
 data/zerion_*.json
 data/zerion_*.jsonl
 data/*watch*.json
