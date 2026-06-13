@@ -40,6 +40,13 @@ STABLE_ASSETS = {"USDT", "USDC", "DAI", "USDE"}
 COPYABLE_ASSETS = MAJOR_ASSETS | STABLE_ASSETS
 
 
+class DuneHttpError(RuntimeError):
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(f"Dune HTTP {status_code}: {detail}")
+        self.status_code = status_code
+        self.detail = detail
+
+
 @dataclass
 class Lot:
     qty: Decimal
@@ -117,7 +124,7 @@ def dune_request(method: str, path: str, api_key: str, payload: dict[str, Any] |
             return json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Dune HTTP {exc.code}: {detail}") from exc
+        raise DuneHttpError(exc.code, detail) from exc
     except URLError as exc:
         raise RuntimeError(f"Dune network error: {exc}") from exc
 
@@ -303,8 +310,58 @@ LIMIT {candidate_limit}
 """
 
 
-def execute_dune_sql(api_key: str, sql: str, timeout_seconds: int, poll_seconds: int) -> list[dict[str, Any]]:
-    submitted = dune_request("POST", "sql/execute", api_key, {"sql": sql})
+def wait_with_progress(seconds: int, reason: str) -> None:
+    for remaining in range(seconds, 0, -1):
+        if remaining == seconds or remaining % 10 == 0 or remaining <= 5:
+            print(f"{reason}; retry in {remaining}s", flush=True)
+        time.sleep(1)
+
+
+def dune_request_with_402_retry(
+    method: str,
+    path: str,
+    api_key: str,
+    payload: dict[str, Any] | None,
+    retry_402: bool,
+    retry_402_delay: int,
+    retry_402_max: int,
+    label: str,
+) -> dict[str, Any]:
+    retry_count = 0
+    while True:
+        try:
+            return dune_request(method, path, api_key, payload)
+        except DuneHttpError as exc:
+            if exc.status_code != 402 or not retry_402:
+                raise
+            retry_count += 1
+            if retry_402_max > 0 and retry_count > retry_402_max:
+                raise
+            wait_with_progress(
+                retry_402_delay,
+                f"Dune datapoint limit hit during {label} (attempt {retry_count})",
+            )
+
+
+def execute_dune_sql(
+    api_key: str,
+    sql: str,
+    timeout_seconds: int,
+    poll_seconds: int,
+    retry_402: bool = False,
+    retry_402_delay: int = 60,
+    retry_402_max: int = 0,
+) -> list[dict[str, Any]]:
+    submitted = dune_request_with_402_retry(
+        "POST",
+        "sql/execute",
+        api_key,
+        {"sql": sql},
+        retry_402,
+        retry_402_delay,
+        retry_402_max,
+        "query submit",
+    )
     execution_id = submitted.get("execution_id")
     if not execution_id:
         raise RuntimeError(f"Dune did not return execution_id: {submitted}")
@@ -313,7 +370,21 @@ def execute_dune_sql(api_key: str, sql: str, timeout_seconds: int, poll_seconds:
     deadline = time.time() + timeout_seconds
     last_state = ""
     while time.time() < deadline:
-        result = dune_request("GET", f"execution/{execution_id}/results?limit=100000", api_key)
+        retry_count = 0
+        while True:
+            try:
+                result = dune_request("GET", f"execution/{execution_id}/results?limit=100000", api_key)
+                break
+            except DuneHttpError as exc:
+                if exc.status_code != 402 or not retry_402:
+                    raise
+                retry_count += 1
+                if retry_402_max > 0 and retry_count > retry_402_max:
+                    raise
+                wait_with_progress(
+                    retry_402_delay,
+                    f"Dune datapoint limit hit on execution {execution_id} (attempt {retry_count})",
+                )
         state = str(result.get("state", ""))
         if state != last_state:
             print(f"Dune state: {state}", flush=True)
@@ -638,6 +709,9 @@ def main() -> int:
     parser.add_argument("--min-balance-usd", default="50000", help="Discovery current copyable balance minimum. Default: 50000.")
     parser.add_argument("--max-balance-usd", default="100000000", help="Discovery current copyable balance maximum. Default: 100000000.")
     parser.add_argument("--pnl-chunk-size", type=int, default=25, help="Wallets per PnL Dune query. Default: 25.")
+    parser.add_argument("--retry-402", action="store_true", help="Keep retrying Dune 402 datapoint-limit responses.")
+    parser.add_argument("--retry-402-delay", type=int, default=60, help="Seconds to wait between Dune 402 retries.")
+    parser.add_argument("--retry-402-max", type=int, default=0, help="Maximum 402 retries per execution. 0 means infinite.")
     parser.add_argument("--timeout", type=int, default=900, help="Dune timeout seconds. Default: 900.")
     parser.add_argument("--poll", type=int, default=5, help="Dune polling interval seconds. Default: 5.")
     parser.add_argument("--out-dir", default="data/reports/wallet_pnl", help="Output directory.")
@@ -678,7 +752,15 @@ def main() -> int:
             f"active_weeks>={args.min_active_weeks}, swaps>={args.min_swaps}",
             flush=True,
         )
-        discovered_rows = execute_dune_sql(api_key, discovery_sql, args.timeout, args.poll)
+        discovered_rows = execute_dune_sql(
+            api_key,
+            discovery_sql,
+            args.timeout,
+            args.poll,
+            retry_402=args.retry_402,
+            retry_402_delay=args.retry_402_delay,
+            retry_402_max=args.retry_402_max,
+        )
         write_csv(out_dir / "discovered_candidates.csv", discovered_rows)
         (out_dir / "discovery.sql").write_text(discovery_sql, encoding="utf-8")
         wallets = [normalize_wallet(str(row["wallet_address"])) for row in discovered_rows]
@@ -693,13 +775,32 @@ def main() -> int:
     pnl_sql_parts: list[str] = []
     chunks = chunked(wallets, max(1, args.pnl_chunk_size))
     for index, wallet_chunk in enumerate(chunks, start=1):
-        print(f"PnL chunk {index}/{len(chunks)}: {len(wallet_chunk)} wallets", flush=True)
+        completed_wallets = min((index - 1) * max(1, args.pnl_chunk_size), len(wallets))
+        progress_pct = (completed_wallets / len(wallets) * 100) if wallets else 0
+        print(
+            f"PnL chunk {index}/{len(chunks)}: {len(wallet_chunk)} wallets "
+            f"| progress {completed_wallets}/{len(wallets)} ({progress_pct:.1f}%)",
+            flush=True,
+        )
         sql = build_sql(wallet_chunk, max(1, min(args.days, 365)), dec(args.min_trade_usd))
         pnl_sql_parts.append(f"-- chunk {index}\n{sql}")
         try:
-            rows.extend(execute_dune_sql(api_key, sql, args.timeout, args.poll))
+            rows.extend(
+                execute_dune_sql(
+                    api_key,
+                    sql,
+                    args.timeout,
+                    args.poll,
+                    retry_402=args.retry_402,
+                    retry_402_delay=args.retry_402_delay,
+                    retry_402_max=args.retry_402_max,
+                )
+            )
             (out_dir / "raw_rows_partial.json").write_text(json.dumps(rows, indent=2, default=str), encoding="utf-8")
             (out_dir / "pnl_queries.sql").write_text("\n\n".join(pnl_sql_parts), encoding="utf-8")
+            completed_wallets = min(index * max(1, args.pnl_chunk_size), len(wallets))
+            progress_pct = (completed_wallets / len(wallets) * 100) if wallets else 100
+            print(f"PnL progress {completed_wallets}/{len(wallets)} ({progress_pct:.1f}%)", flush=True)
         except Exception as exc:
             message = f"PnL chunk {index}/{len(chunks)} failed: {exc}"
             print(message, file=sys.stderr, flush=True)
