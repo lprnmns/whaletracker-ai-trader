@@ -14,6 +14,7 @@ Outputs per trader:
 - open_orders.csv
 - portfolio_history.csv
 - summary.json
+- scan_progress.json in the run directory
 
 The script is intentionally CSV-first so we can inspect whether a trader is
 actually copyable before wiring it into the web UI.
@@ -579,6 +580,62 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
+def write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def load_existing_summary(root_out: Path, address: str) -> dict[str, Any] | None:
+    path = root_out / address / "summary.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def write_run_outputs(
+    root_out: Path,
+    summaries: list[dict[str, Any]],
+    progress: dict[str, Any],
+) -> None:
+    summary_rows = [
+        {key: str(value) for key, value in summary.items() if not isinstance(value, (list, dict))}
+        for summary in summaries
+    ]
+    write_csv(root_out / "trader_summaries.csv", summary_rows)
+    write_json(root_out / "trader_summaries.json", summaries)
+    write_json(root_out / "scan_progress.json", progress)
+
+
+def update_progress(
+    progress: dict[str, Any],
+    *,
+    completed: int | None = None,
+    skipped_existing: int | None = None,
+    errors: int | None = None,
+    current_address: str | None = None,
+    last_error: str | None = None,
+) -> None:
+    if completed is not None:
+        progress["completed"] = completed
+    if skipped_existing is not None:
+        progress["skipped_existing"] = skipped_existing
+    if errors is not None:
+        progress["errors"] = errors
+    progress["current_address"] = current_address or ""
+    if last_error is not None:
+        progress["last_error"] = last_error
+    progress["updated_at"] = datetime.now(timezone.utc).isoformat()
+    total = int(progress.get("total") or 0)
+    done = int(progress.get("completed") or 0) + int(progress.get("skipped_existing") or 0) + int(progress.get("errors") or 0)
+    progress["percent"] = round((done / total * 100), 2) if total else 0
+
+
 def load_addresses(args: argparse.Namespace) -> list[str]:
     addresses: list[str] = []
     for address in args.address:
@@ -745,6 +802,9 @@ def main() -> int:
     parser.add_argument("--min-leaderboard-account-usd", default="0")
     parser.add_argument("--min-leaderboard-volume-usd", default="0")
     parser.add_argument("--out-dir", default="data/reports/hyperliquid_profiles")
+    parser.add_argument("--run-id", default="", help="Stable output run id. Defaults to UTC timestamp.")
+    parser.add_argument("--skip-existing", action="store_true", help="Skip addresses with an existing summary.json in the run directory.")
+    parser.add_argument("--progress-every", type=int, default=1, help="Write progress after this many processed addresses. Default: 1.")
     args = parser.parse_args()
     global REQUEST_DELAY_SECONDS
     global MAX_REQUESTS_PER_ADDRESS
@@ -758,27 +818,68 @@ def main() -> int:
         addresses = addresses[: args.max_addresses]
 
     root = Path(__file__).resolve().parents[1]
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    root_out = root / args.out_dir / timestamp
+    run_id = args.run_id.strip() or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    root_out = root / args.out_dir / run_id
     root_out.mkdir(parents=True, exist_ok=True)
 
     summaries: list[dict[str, Any]] = []
-    for address in addresses:
+    progress: dict[str, Any] = {
+        "run_id": run_id,
+        "days": args.days,
+        "total": len(addresses),
+        "completed": 0,
+        "skipped_existing": 0,
+        "errors": 0,
+        "percent": 0,
+        "current_address": "",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "output_directory": str(root_out),
+    }
+    write_json(root_out / "input_addresses.json", addresses)
+    write_run_outputs(root_out, summaries, progress)
+
+    completed = 0
+    skipped_existing = 0
+    errors = 0
+    for index, address in enumerate(addresses, start=1):
         try:
-            summaries.append(profile_address(address, args, root_out))
+            update_progress(progress, current_address=address)
+            write_json(root_out / "scan_progress.json", progress)
+            existing = load_existing_summary(root_out, address) if args.skip_existing else None
+            if existing is not None:
+                existing["skipped_existing"] = "yes"
+                summaries.append(existing)
+                skipped_existing += 1
+                print(f"{address}: SKIP existing summary", flush=True)
+            else:
+                summaries.append(profile_address(address, args, root_out))
+                completed += 1
             if args.address_delay > 0:
                 time.sleep(args.address_delay)
         except Exception as exc:
             error = {"address": address, "error": str(exc)}
             summaries.append(error)
+            errors += 1
             print(f"{address}: ERROR {exc}", flush=True)
+        update_progress(
+            progress,
+            completed=completed,
+            skipped_existing=skipped_existing,
+            errors=errors,
+            current_address=address,
+            last_error=str(summaries[-1].get("error", "")),
+        )
+        if index % max(1, args.progress_every) == 0 or index == len(addresses):
+            write_run_outputs(root_out, summaries, progress)
+            print(
+                f"Progress {progress['percent']}% "
+                f"completed={completed} skipped={skipped_existing} errors={errors}/{len(addresses)}",
+                flush=True,
+            )
 
-    summary_rows = [
-        {key: str(value) for key, value in summary.items() if not isinstance(value, (list, dict))}
-        for summary in summaries
-    ]
-    write_csv(root_out / "trader_summaries.csv", summary_rows)
-    (root_out / "trader_summaries.json").write_text(json.dumps(summaries, indent=2), encoding="utf-8")
+    update_progress(progress, completed=completed, skipped_existing=skipped_existing, errors=errors)
+    write_run_outputs(root_out, summaries, progress)
     print(f"Report directory: {root_out}")
     return 0
 
