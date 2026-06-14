@@ -66,9 +66,9 @@ public class OkxSettings
 
     /// <summary>
     /// OKX trade margin mode: cross veya isolated.
-    /// Hyperliquid copy trading için varsayılan cross/full margin.
+    /// Copy trading için varsayılan isolated.
     /// </summary>
-    public string MarginMode { get; set; } = "cross";
+    public string MarginMode { get; set; } = "isolated";
 }
 
 public class OpenAiSettings

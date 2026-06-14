@@ -57,6 +57,10 @@ public class WhaleTrackerDbContext : DbContext
     public DbSet<TraderDiscoveryCandidateEntity> TraderDiscoveryCandidates =>
         Set<TraderDiscoveryCandidateEntity>();
 
+    public DbSet<CopyTraderPositionEntity> CopyTraderPositions => Set<CopyTraderPositionEntity>();
+
+    public DbSet<CopyLedgerEventEntity> CopyLedgerEvents => Set<CopyLedgerEventEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -160,6 +164,21 @@ public class WhaleTrackerDbContext : DbContext
             entity.HasIndex(e => e.WalletAddress);
             entity.HasIndex(e => e.ApprovedNotionalUsd);
             entity.HasIndex(e => new { e.TraderDiscoveryRunId, e.WalletAddress }).IsUnique();
+        });
+
+        modelBuilder.Entity<CopyTraderPositionEntity>(entity =>
+        {
+            entity.HasIndex(e => new { e.TraderId, e.Symbol, e.Side }).IsUnique();
+            entity.HasIndex(e => new { e.Symbol, e.Side, e.IsActive });
+            entity.HasIndex(e => e.UpdatedAt);
+        });
+
+        modelBuilder.Entity<CopyLedgerEventEntity>(entity =>
+        {
+            entity.HasIndex(e => e.CreatedAt);
+            entity.HasIndex(e => new { e.Symbol, e.Side });
+            entity.HasIndex(e => e.TraderId);
+            entity.HasIndex(e => e.SourceEventId);
         });
     }
 }
