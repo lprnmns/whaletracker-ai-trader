@@ -26,7 +26,8 @@ public sealed class HyperliquidReportsController : ControllerBase
                 id = x.Name,
                 createdAt = Directory.GetCreationTimeUtc(x.FullName),
                 traderCount = x.GetDirectories().Count(IsAddressDirectory),
-                hasSummary = System.IO.File.Exists(Path.Combine(x.FullName, "trader_summaries.csv"))
+                hasSummary = System.IO.File.Exists(Path.Combine(x.FullName, "trader_summaries.csv")),
+                hasHistoricalScoreboard = System.IO.File.Exists(HistoricalScoreboardPath(x))
             });
         return Ok(runs);
     }
@@ -57,6 +58,36 @@ public sealed class HyperliquidReportsController : ControllerBase
             .ThenByDescending(row => DecimalValue(row, "net_closed_pnl_usd"))
             .ToList();
         return Ok(summaries);
+    }
+
+    [HttpGet("runs/{runId}/historical-scoreboard")]
+    public IActionResult GetHistoricalScoreboard(string runId)
+    {
+        var run = ResolveRun(runId);
+        if (run == null)
+        {
+            return NotFound();
+        }
+
+        var rows = ReadCsv(HistoricalScoreboardPath(run))
+            .OrderBy(x => DecimalValue(x, "rank") == 0 ? decimal.MaxValue : DecimalValue(x, "rank"))
+            .ThenByDescending(x => DecimalValue(x, "historical_quality_score"))
+            .ToList();
+        return Ok(rows);
+    }
+
+    [HttpGet("runs/{runId}/historical-scoreboard/{address}")]
+    public IActionResult GetHistoricalScoreboardTrader(string runId, string address)
+    {
+        var run = ResolveRun(runId);
+        if (run == null || !IsAddress(address))
+        {
+            return NotFound();
+        }
+
+        var row = ReadCsv(HistoricalScoreboardPath(run))
+            .FirstOrDefault(x => string.Equals(x.GetValueOrDefault("address"), address, StringComparison.OrdinalIgnoreCase));
+        return row == null ? NotFound() : Ok(row);
     }
 
     [HttpGet("runs/{runId}/traders/{address}")]
@@ -113,6 +144,9 @@ public sealed class HyperliquidReportsController : ControllerBase
         var directory = new DirectoryInfo(Path.Combine(ResolveReportsRoot().FullName, runId));
         return directory.Exists ? directory : null;
     }
+
+    private static string HistoricalScoreboardPath(DirectoryInfo run) =>
+        Path.Combine(run.FullName, "historical_scoreboard", "historical_scoreboard.csv");
 
     private static bool IsAddressDirectory(DirectoryInfo directory) => IsAddress(directory.Name);
 

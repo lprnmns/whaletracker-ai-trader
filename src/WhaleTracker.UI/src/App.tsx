@@ -163,9 +163,11 @@ type HyperliquidRun = {
   createdAt: string
   traderCount: number
   hasSummary: boolean
+  hasHistoricalScoreboard: boolean
 }
 
 type HyperliquidTraderSummary = Record<string, string>
+type HyperliquidScoreRow = Record<string, string>
 
 type HyperliquidTraderDetail = {
   address: string
@@ -443,6 +445,8 @@ function App() {
   const [hyperRuns, setHyperRuns] = useState<HyperliquidRun[]>([])
   const [activeHyperRun, setActiveHyperRun] = useState<HyperliquidRun | null>(null)
   const [hyperTraders, setHyperTraders] = useState<HyperliquidTraderSummary[]>([])
+  const [hyperScoreboard, setHyperScoreboard] = useState<HyperliquidScoreRow[]>([])
+  const [selectedHyperScore, setSelectedHyperScore] = useState<HyperliquidScoreRow | null>(null)
   const [selectedHyperTrader, setSelectedHyperTrader] = useState<HyperliquidTraderSummary | null>(null)
   const [hyperTraderDetail, setHyperTraderDetail] = useState<HyperliquidTraderDetail | null>(null)
   const [isDiscoveryRunning, setIsDiscoveryRunning] = useState(false)
@@ -619,11 +623,17 @@ function App() {
       setHyperRuns(runs)
       if (!activeHyperRun && runs.length > 0) {
         setActiveHyperRun(runs[0])
-        const traders = await fetchJson<HyperliquidTraderSummary[]>(`/api/hyperliquid-reports/runs/${runs[0].id}/traders`)
+        const [traders, scoreboard] = await Promise.all([
+          fetchJson<HyperliquidTraderSummary[]>(`/api/hyperliquid-reports/runs/${runs[0].id}/traders`),
+          fetchJson<HyperliquidScoreRow[]>(`/api/hyperliquid-reports/runs/${runs[0].id}/historical-scoreboard`).catch(() => []),
+        ])
         setHyperTraders(traders)
-        setSelectedHyperTrader(traders[0] || null)
-        if (traders[0]?.address) {
-          const detail = await fetchJson<HyperliquidTraderDetail>(`/api/hyperliquid-reports/runs/${runs[0].id}/traders/${traders[0].address}`)
+        setHyperScoreboard(scoreboard)
+        setSelectedHyperScore(scoreboard[0] || null)
+        setSelectedHyperTrader(scoreboard[0] ? null : traders[0] || null)
+        const firstAddress = scoreboard[0]?.address || traders[0]?.address
+        if (firstAddress) {
+          const detail = await fetchJson<HyperliquidTraderDetail>(`/api/hyperliquid-reports/runs/${runs[0].id}/traders/${firstAddress}`)
           setHyperTraderDetail(detail)
         }
       }
@@ -636,18 +646,33 @@ function App() {
     setActiveHyperRun(run)
     setHyperTraderDetail(null)
     setSelectedHyperTrader(null)
-    const traders = await fetchJson<HyperliquidTraderSummary[]>(`/api/hyperliquid-reports/runs/${run.id}/traders`)
+    setSelectedHyperScore(null)
+    const [traders, scoreboard] = await Promise.all([
+      fetchJson<HyperliquidTraderSummary[]>(`/api/hyperliquid-reports/runs/${run.id}/traders`),
+      fetchJson<HyperliquidScoreRow[]>(`/api/hyperliquid-reports/runs/${run.id}/historical-scoreboard`).catch(() => []),
+    ])
     setHyperTraders(traders)
-    setSelectedHyperTrader(traders[0] || null)
-    if (traders[0]?.address) {
-      setHyperTraderDetail(await fetchJson<HyperliquidTraderDetail>(`/api/hyperliquid-reports/runs/${run.id}/traders/${traders[0].address}`))
+    setHyperScoreboard(scoreboard)
+    setSelectedHyperScore(scoreboard[0] || null)
+    setSelectedHyperTrader(scoreboard[0] ? null : traders[0] || null)
+    const firstAddress = scoreboard[0]?.address || traders[0]?.address
+    if (firstAddress) {
+      setHyperTraderDetail(await fetchJson<HyperliquidTraderDetail>(`/api/hyperliquid-reports/runs/${run.id}/traders/${firstAddress}`))
     }
   }
 
   const loadHyperTraderDetail = async (trader: HyperliquidTraderSummary) => {
     if (!activeHyperRun || !trader.address) return
     setSelectedHyperTrader(trader)
+    setSelectedHyperScore(null)
     setHyperTraderDetail(await fetchJson<HyperliquidTraderDetail>(`/api/hyperliquid-reports/runs/${activeHyperRun.id}/traders/${trader.address}`))
+  }
+
+  const loadHyperScoreDetail = async (row: HyperliquidScoreRow) => {
+    if (!activeHyperRun || !row.address) return
+    setSelectedHyperScore(row)
+    setSelectedHyperTrader(null)
+    setHyperTraderDetail(await fetchJson<HyperliquidTraderDetail>(`/api/hyperliquid-reports/runs/${activeHyperRun.id}/traders/${row.address}`))
   }
 
   useEffect(() => {
@@ -1490,7 +1515,34 @@ function App() {
                 {hyperRuns.length === 0 && <p className="muted">No Hyperliquid profile reports found yet.</p>}
                 {hyperRuns.map((run) => (
                   <button key={run.id} className={activeHyperRun?.id === run.id ? 'active-list-row' : ''} onClick={() => loadHyperRunTraders(run)}>
-                    {run.id} · {run.traderCount} traders · {run.hasSummary ? 'summary ready' : 'partial'}
+                    {run.id} · {run.traderCount} traders · {run.hasSummary ? 'summary ready' : 'partial'} · {run.hasHistoricalScoreboard ? 'scored' : 'unscored'}
+                  </button>
+                ))}
+              </div>
+
+              <div className="section-heading">
+                <strong>Historical Scoreboard</strong>
+                <span>{activeHyperRun ? activeHyperRun.id : 'Select a report run'} · HQS ranks historical copy quality; confidence is intentionally separate.</span>
+              </div>
+              <div className="hyper-score-list">
+                {hyperScoreboard.length === 0 && <p className="muted">No historical scoreboard generated for this run yet.</p>}
+                {hyperScoreboard.slice(0, 40).map((row) => (
+                  <button
+                    key={row.address}
+                    className={selectedHyperScore?.address === row.address ? 'hyper-score-row selected' : 'hyper-score-row'}
+                    onClick={() => loadHyperScoreDetail(row)}
+                  >
+                    <div className="score-rank">
+                      <strong>#{row.rank}</strong>
+                      <span>{row.watchlist_eligible === 'yes' ? 'watch' : 'review'}</span>
+                    </div>
+                    <div>
+                      <strong>{shortAddress(row.address)}</strong>
+                      <span>HQS {Number(row.historical_quality_score || 0).toFixed(1)} · conf {Number(row.confidence_score || 0).toFixed(1)} · major {formatUsd(Number(row.major_net_pnl_usd || 0))}</span>
+                      <small>
+                        win {row.major_win_rate_pct || '--'}% · BTC/ETH/SOL {formatUsd(Number(row.portable_btc_eth_sol_net_pnl_usd || 0))} · {row.gate_reasons || row.warnings || 'clear'}
+                      </small>
+                    </div>
                   </button>
                 ))}
               </div>
@@ -1521,6 +1573,15 @@ function App() {
                     <strong>{shortAddress(hyperTraderDetail.address)} detail</strong>
                     <span>{hyperTraderDetail.summary.verdict || 'review'} · fills {hyperTraderDetail.summary.fill_count || '0'} · active positions {hyperTraderDetail.summary.active_positions || '0'}</span>
                   </div>
+                  {selectedHyperScore && selectedHyperScore.address === hyperTraderDetail.address && (
+                    <div className="score-breakdown">
+                      <div><span>HQS</span><strong>{Number(selectedHyperScore.historical_quality_score || 0).toFixed(1)}</strong></div>
+                      <div><span>Confidence</span><strong>{Number(selectedHyperScore.confidence_score || 0).toFixed(1)}</strong></div>
+                      <div><span>Copyability</span><strong>{Number(selectedHyperScore.copyability || 0).toFixed(1)}</strong></div>
+                      <div><span>Risk</span><strong>{Number(selectedHyperScore.risk_control || 0).toFixed(1)}</strong></div>
+                      <p>{selectedHyperScore.gate_reasons || selectedHyperScore.warnings || 'No hard-gate warning recorded.'}</p>
+                    </div>
+                  )}
                   <div className="hyper-summary-grid">
                     <div><span>Account</span><strong>${hyperTraderDetail.summary.account_value_usd || '--'}</strong></div>
                     <div><span>Net PnL</span><strong>${hyperTraderDetail.summary.net_closed_pnl_usd || '--'}</strong></div>
