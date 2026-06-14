@@ -38,6 +38,10 @@ public class OkxService : IOkxService
     private static readonly object _supportedSymbolsLock = new();
     private static readonly TimeSpan _supportedSymbolsCacheExpiry = TimeSpan.FromHours(6);
     private static DateTime _supportedSymbolsUpdatedAt = DateTime.MinValue;
+    private static readonly TimeSpan _accountConfigCacheExpiry = TimeSpan.FromMinutes(5);
+    private static OkxAccountConfiguration? _accountConfigCache;
+    private static DateTime _accountConfigUpdatedAt = DateTime.MinValue;
+    private static readonly object _accountConfigLock = new();
     private const string SupportedSymbolsFileName = "data/okx_futures_symbols.json";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -45,6 +49,11 @@ public class OkxService : IOkxService
         PropertyNameCaseInsensitive = true,
         NumberHandling = JsonNumberHandling.AllowReadingFromString
     };
+
+    private string MarginMode =>
+        string.Equals(_settings.MarginMode, "isolated", StringComparison.OrdinalIgnoreCase)
+            ? "isolated"
+            : "cross";
 
     public OkxService(
         HttpClient httpClient,
@@ -113,6 +122,37 @@ public class OkxService : IOkxService
             _logger.LogError(ex, "GetAccountInfoAsync hatası!");
             throw;
         }
+    }
+
+    public async Task<OkxAccountConfiguration> GetAccountConfigurationAsync()
+    {
+        lock (_accountConfigLock)
+        {
+            if (_accountConfigCache != null &&
+                DateTime.UtcNow - _accountConfigUpdatedAt < _accountConfigCacheExpiry)
+            {
+                return _accountConfigCache;
+            }
+        }
+
+        var response = await SendGetRequestAsync<OkxAccountConfigResponse>("/api/v5/account/config");
+        var data = response?.Data?.FirstOrDefault();
+
+        var config = new OkxAccountConfiguration
+        {
+            AccountLevel = data?.AcctLv ?? string.Empty,
+            PositionMode = data?.PosMode ?? string.Empty,
+            MarginMode = MarginMode,
+            IsDemo = _settings.IsDemo
+        };
+
+        lock (_accountConfigLock)
+        {
+            _accountConfigCache = config;
+            _accountConfigUpdatedAt = DateTime.UtcNow;
+        }
+
+        return config;
     }
 
     public async Task<Position?> GetPositionAsync(string symbol)
@@ -385,6 +425,15 @@ public class OkxService : IOkxService
             System.Globalization.CultureInfo.InvariantCulture, out var size);
         decimal.TryParse(pos.Upl, System.Globalization.NumberStyles.Any,
             System.Globalization.CultureInfo.InvariantCulture, out var upl);
+        decimal.TryParse(pos.NotionalUsd, System.Globalization.NumberStyles.Any,
+            System.Globalization.CultureInfo.InvariantCulture, out var notionalUsd);
+        decimal.TryParse(pos.Lever, System.Globalization.NumberStyles.Any,
+            System.Globalization.CultureInfo.InvariantCulture, out var leverage);
+
+        if (margin <= 0 && notionalUsd != 0 && leverage > 0)
+        {
+            margin = Math.Abs(notionalUsd) / leverage;
+        }
 
         return new Position
         {
@@ -415,17 +464,6 @@ public class OkxService : IOkxService
 
         try
         {
-            if (signal.Action == TradeAction.OPEN_SHORT || signal.Action == TradeAction.CLOSE_SHORT)
-            {
-                _logger.LogWarning("SHORT işlemleri devre dışı: {Action} {Symbol}", signal.Action, signal.Symbol);
-                return new TradeResult
-                {
-                    Success = false,
-                    Symbol = signal.Symbol,
-                    ErrorMessage = "SHORT işlemleri devre dışı"
-                };
-            }
-
             // ================================================================
             // SENARYO 1: POZİSYON AÇMA / EKLEME (Fire and Forget)
             // ================================================================
@@ -436,20 +474,25 @@ public class OkxService : IOkxService
                 // 1. Kaldıracı ayarla
                 await SetLeverageAsync(signal.Symbol, signal.Leverage);
 
-                // 2. Kontrat sayısını hesapla
-                var contracts = await ConvertToContractsAsync(signal.Symbol, signal.MarginAmountUSDT, signal.Leverage);
+                // 2. Kontrat say?s?n? hesapla
+                var calculation = await CalculateOrderAsync(
+                    signal.Symbol,
+                    signal.MarginAmountUSDT,
+                    signal.Leverage,
+                    "OPEN");
 
-                // 3. Kontrat 0 ise margin yetersiz - işlem yapma
-                if (contracts == 0)
+                if (!calculation.IsValid)
                 {
-                    _logger.LogWarning("⚠️ İşlem iptal: Margin yetersiz! {Symbol} için minimum kontrat değeri çok yüksek.", signal.Symbol);
+                    _logger.LogWarning("Order invalid: {Message}", calculation.ValidationMessage);
                     return new TradeResult
                     {
                         Success = false,
                         Symbol = signal.Symbol,
-                        ErrorMessage = $"Margin yetersiz! {signal.Symbol} için minimum kontrat değeri istenen margin'den çok yüksek."
+                        ErrorMessage = calculation.ValidationMessage
                     };
                 }
+
+                var contracts = calculation.Contracts;
 
                 // 4. Emir parametrelerini belirle
                 string side, posSide;
@@ -480,9 +523,14 @@ public class OkxService : IOkxService
                 _logger.LogInformation("CLOSE emri işleniyor: {Action}", signal.Action);
 
                 // 1. Önce pozisyon var mı kontrol et
-                var activePosition = await GetPositionAsync(signal.Symbol);
+                string direction = signal.Action == TradeAction.CLOSE_LONG ? "long" : "short";
+                var expectedDirection = signal.Action == TradeAction.CLOSE_LONG ? "Long" : "Short";
+                var activePosition = (await GetAllPositionsAsync())
+                    .FirstOrDefault(position =>
+                        string.Equals(position.Symbol, signal.Symbol, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(position.Direction, expectedDirection, StringComparison.OrdinalIgnoreCase));
 
-                if (activePosition == null || activePosition.MarginUsd == 0)
+                if (activePosition == null || activePosition.Size <= 0)
                 {
                     _logger.LogWarning("SKIP: Kapatılacak pozisyon YOK! Symbol: {Symbol}", signal.Symbol);
                     return new TradeResult
@@ -493,47 +541,89 @@ public class OkxService : IOkxService
                     };
                 }
 
-                // 2. %95 Toz Temizleme Kuralı
-                decimal dustThreshold = activePosition.MarginUsd * (_tradingSettings.DustThresholdPercent / 100m);
-                bool shouldFullClose = signal.MarginAmountUSDT >= dustThreshold;
+                // 2. Dust threshold cleanup (percent based)
+                var activeMargin = activePosition.MarginUsd;
+                var requestedClose = signal.MarginAmountUSDT;
 
-                string direction = signal.Action == TradeAction.CLOSE_LONG ? "long" : "short";
-
-                if (shouldFullClose)
+                if (requestedClose <= 0)
                 {
-                    // TAM KAPANIŞ - close-position endpoint kullan
-                    _logger.LogInformation(
-                        "Smart Cleanup: TAM KAPANIŞ ({Amount} >= {Threshold})",
-                        signal.MarginAmountUSDT, dustThreshold);
+                    _logger.LogWarning("SKIP: Close amount <= 0 for {Symbol}", signal.Symbol);
+                    return new TradeResult
+                    {
+                        Success = true,
+                        Symbol = signal.Symbol,
+                        ErrorMessage = "Close amount <= 0, skipped"
+                    };
+                }
+
+                if (activeMargin <= 0)
+                {
+                    _logger.LogWarning(
+                        "Active margin could not be estimated for {Symbol}; falling back to full close.",
+                        signal.Symbol);
 
                     return await ClosePositionAsync(signal.Symbol, direction);
                 }
-                else
+
+                var fullCloseThreshold = activeMargin * (_tradingSettings.DustThresholdPercent / 100m);
+
+                if (requestedClose >= activeMargin || requestedClose >= fullCloseThreshold)
                 {
-                    // KISMİ KAPANIŞ (reduceOnly = true)
                     _logger.LogInformation(
-                        "Kısmi Kapanış: {Amount} USDT (Threshold: {Threshold})",
-                        signal.MarginAmountUSDT, dustThreshold);
+                        "Smart Cleanup: FULL CLOSE ({Amount} >= {Threshold})",
+                        requestedClose, fullCloseThreshold);
 
-                    // Kısmi kapanış için ters yönde emir
-                    string side = signal.Action == TradeAction.CLOSE_LONG ? "sell" : "buy";
-                    var contracts = await ConvertToContractsAsync(signal.Symbol, signal.MarginAmountUSDT, 1);
-
-                    if (contracts == 0)
-                    {
-                        _logger.LogWarning("SKIP: Kapatma için kontrat 0 çıktı. Symbol: {Symbol}", signal.Symbol);
-                        return new TradeResult
-                        {
-                            Success = true,
-                            Symbol = signal.Symbol,
-                            ErrorMessage = "Kapatma için kontrat hesaplanamadı, işlem atlandı"
-                        };
-                    }
-
-                    return await PlaceMarketOrderAsync(signal.Symbol, side, direction, contracts, reduceOnly: true);
+                    return await ClosePositionAsync(signal.Symbol, direction);
                 }
-            }
 
+                var instrument = await GetInstrumentInfoAsync(signal.Symbol);
+                if (instrument == null)
+                {
+                    _logger.LogWarning("Instrument not found: {Symbol}", signal.Symbol);
+                    return new TradeResult
+                    {
+                        Success = false,
+                        Symbol = signal.Symbol,
+                        ErrorMessage = $"Instrument not found: {signal.Symbol}"
+                    };
+                }
+
+                var closeRatio = requestedClose / activeMargin;
+                var rawContracts = activePosition.Size * closeRatio;
+                var lotSz = instrument.LotSz > 0 ? instrument.LotSz : instrument.MinSz;
+                var contracts = Math.Floor(rawContracts / lotSz) * lotSz;
+
+                if (contracts <= 0)
+                {
+                    contracts = instrument.MinSz;
+                }
+
+                if (contracts >= activePosition.Size)
+                {
+                    _logger.LogInformation("Smart Cleanup: FULL CLOSE (contracts >= position size)");
+                    return await ClosePositionAsync(signal.Symbol, direction);
+                }
+
+                if (contracts < instrument.MinSz)
+                {
+                    _logger.LogWarning("SKIP: Close contracts below minimum for {Symbol}", signal.Symbol);
+                    return new TradeResult
+                    {
+                        Success = true,
+                        Symbol = signal.Symbol,
+                        ErrorMessage = "Close contracts below minimum, skipped"
+                    };
+                }
+
+                _logger.LogInformation(
+                    "Partial close: {Contracts} contracts ({Amount} USDT, Active: {Active})",
+                    contracts, requestedClose, activeMargin);
+
+                // Partial close uses reduce-only order
+                string side = signal.Action == TradeAction.CLOSE_LONG ? "sell" : "buy";
+
+                return await PlaceMarketOrderAsync(signal.Symbol, side, direction, contracts, reduceOnly: true);
+            }
             // IGNORE sinyali
             _logger.LogInformation("İşlem IGNORE edildi: {Reason}", signal.Reason);
             return new TradeResult
@@ -566,15 +656,18 @@ public class OkxService : IOkxService
         try
         {
             var instId = $"{symbol.ToUpper()}-USDT-SWAP";
+            var clientOrderId = CreateClientOrderId(symbol, side);
+            var okxPosSide = await ResolveOkxPosSideAsync(posSide);
 
             var requestBody = new Dictionary<string, object>
             {
                 { "instId", instId },
-                { "tdMode", "isolated" },  // isolated margin
+                { "tdMode", MarginMode },
                 { "side", side },           // buy veya sell
-                { "posSide", posSide },     // long veya short
+                { "posSide", okxPosSide },
                 { "ordType", "market" },
-                { "sz", size.ToString(System.Globalization.CultureInfo.InvariantCulture) }
+                { "sz", size.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                { "clOrdId", clientOrderId }
             };
 
             if (reduceOnly)
@@ -584,9 +677,9 @@ public class OkxService : IOkxService
 
             var response = await SendPostRequestAsync<OkxOrderResponse>("/api/v5/trade/order", requestBody);
 
-            if (response?.Code != "0")
+            var detail = response?.Data?.FirstOrDefault();
+            if (response?.Code != "0" || (detail?.SCode is not null && detail.SCode != "0"))
             {
-                var detail = response?.Data?.FirstOrDefault();
                 _logger.LogError(
                     "Emir başarısız: {Code} - {Msg} (sCode: {SCode}, sMsg: {SMsg})",
                     response?.Code,
@@ -600,7 +693,7 @@ public class OkxService : IOkxService
                 };
             }
 
-            var orderId = response.Data?.FirstOrDefault()?.OrdId ?? "";
+            var orderId = detail?.OrdId ?? "";
             _logger.LogInformation("Emir başarılı! OrderId: {OrderId}", orderId);
 
             return new TradeResult
@@ -634,8 +727,8 @@ public class OkxService : IOkxService
             var requestBody = new
             {
                 instId = instId,
-                mgnMode = "isolated",
-                posSide = direction.ToLower()  // "long" veya "short"
+                mgnMode = MarginMode,
+                posSide = await ResolveOkxPosSideAsync(direction.ToLower())
             };
 
             var response = await SendPostRequestAsync<OkxBaseResponse>("/api/v5/trade/close-position", requestBody);
@@ -678,23 +771,43 @@ public class OkxService : IOkxService
         {
             var instId = $"{symbol.ToUpper()}-USDT-SWAP";
 
-            // Long ve Short için ayrı ayrı kaldıraç ayarla (hedge mode)
-            var requestBody = new
+            if (MarginMode == "cross")
+            {
+                var requestBody = new
+                {
+                    instId = instId,
+                    lever = leverage.ToString(),
+                    mgnMode = "cross"
+                };
+
+                var response = await SendPostRequestAsync<OkxBaseResponse>("/api/v5/account/set-leverage", requestBody);
+
+                if (response?.Code != "0")
+                {
+                    _logger.LogWarning("Cross kaldıraç ayarlanamadı: {Code} - {Msg}", response?.Code, response?.Msg);
+                    return false;
+                }
+
+                _logger.LogInformation("Cross kaldıraç ayarlandı: {Symbol} -> {Leverage}x", symbol, leverage);
+                return true;
+            }
+
+            // Isolated hedge mode: long ve short için ayrı ayrı kaldıraç ayarla.
+            var requestBodyLong = new
             {
                 instId = instId,
                 lever = leverage.ToString(),
-                mgnMode = "isolated",  // isolated margin kullan
+                mgnMode = "isolated",
                 posSide = "long"
             };
 
-            var response = await SendPostRequestAsync<OkxBaseResponse>("/api/v5/account/set-leverage", requestBody);
+            var responseLong = await SendPostRequestAsync<OkxBaseResponse>("/api/v5/account/set-leverage", requestBodyLong);
 
-            if (response?.Code != "0")
+            if (responseLong?.Code != "0")
             {
-                _logger.LogWarning("Long kaldıraç ayarlanamadı: {Code} - {Msg}", response?.Code, response?.Msg);
+                _logger.LogWarning("Long kaldıraç ayarlanamadı: {Code} - {Msg}", responseLong?.Code, responseLong?.Msg);
             }
 
-            // Short için de ayarla
             var requestBodyShort = new
             {
                 instId = instId,
@@ -710,8 +823,9 @@ public class OkxService : IOkxService
                 _logger.LogWarning("Short kaldıraç ayarlanamadı: {Code} - {Msg}", responseShort?.Code, responseShort?.Msg);
             }
 
-            _logger.LogInformation("Kaldıraç ayarlandı: {Symbol} -> {Leverage}x", symbol, leverage);
-            return true;
+            var success = responseLong?.Code == "0" && responseShort?.Code == "0";
+            _logger.LogInformation("Isolated kaldıraç ayarı: {Symbol} -> {Leverage}x success={Success}", symbol, leverage, success);
+            return success;
         }
         catch (Exception ex)
         {
@@ -1038,6 +1152,37 @@ public class OkxService : IOkxService
     // YARDIMCI METODLAR
     // ================================================================
 
+    private static string CreateClientOrderId(string symbol, string side)
+    {
+        var normalizedSymbol = new string(symbol
+            .Where(char.IsLetterOrDigit)
+            .Take(6)
+            .ToArray())
+            .ToUpperInvariant();
+        var normalizedSide = string.Equals(side, "buy", StringComparison.OrdinalIgnoreCase) ? "B" : "S";
+        var stamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var suffix = Guid.NewGuid().ToString("N")[..6];
+        return $"WT{normalizedSymbol}{normalizedSide}{stamp[^8..]}{suffix}";
+    }
+
+    private async Task<string> ResolveOkxPosSideAsync(string desiredPosSide)
+    {
+        try
+        {
+            var config = await GetAccountConfigurationAsync();
+            if (string.Equals(config.PositionMode, "net_mode", StringComparison.OrdinalIgnoreCase))
+            {
+                return "net";
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Account config okunamadı, posSide olduğu gibi kullanılacak.");
+        }
+
+        return desiredPosSide.ToLowerInvariant();
+    }
+
     /// <summary>
     /// OKX API imza oluştur
     /// </summary>
@@ -1134,6 +1279,27 @@ public class OkxService : IOkxService
 // ================================================================
 
 #region OKX Response DTOs
+
+public class OkxAccountConfigResponse
+{
+    [JsonPropertyName("code")]
+    public string? Code { get; set; }
+
+    [JsonPropertyName("msg")]
+    public string? Msg { get; set; }
+
+    [JsonPropertyName("data")]
+    public List<OkxAccountConfigData>? Data { get; set; }
+}
+
+public class OkxAccountConfigData
+{
+    [JsonPropertyName("acctLv")]
+    public string? AcctLv { get; set; }
+
+    [JsonPropertyName("posMode")]
+    public string? PosMode { get; set; }
+}
 
 /// <summary>
 /// OKX Balance API Response

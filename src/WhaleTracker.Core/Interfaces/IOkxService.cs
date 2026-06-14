@@ -18,6 +18,11 @@ public interface IOkxService
     Task<UserStats> GetAccountInfoAsync();
 
     /// <summary>
+    /// OKX hesap konfigürasyonunu çeker (position mode, account level, aktif margin mode).
+    /// </summary>
+    Task<OkxAccountConfiguration> GetAccountConfigurationAsync();
+
+    /// <summary>
     /// Belirli bir coin için açık pozisyonu çeker
     /// </summary>
     Task<Position?> GetPositionAsync(string symbol);

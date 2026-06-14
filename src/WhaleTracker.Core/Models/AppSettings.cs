@@ -63,6 +63,12 @@ public class OkxSettings
     /// Base URL (demo veya gerçek)
     /// </summary>
     public string BaseUrl { get; set; } = "https://www.okx.com";
+
+    /// <summary>
+    /// OKX trade margin mode: cross veya isolated.
+    /// Hyperliquid copy trading için varsayılan cross/full margin.
+    /// </summary>
+    public string MarginMode { get; set; } = "cross";
 }
 
 public class OpenAiSettings
@@ -119,7 +125,7 @@ public class TradingSettings
     /// <summary>
     /// Varsayılan kaldıraç
     /// </summary>
-    public int DefaultLeverage { get; set; } = 2;
+    public int DefaultLeverage { get; set; } = 10;
 
     /// <summary>
     /// Minimum işlem büyüklüğü (USDT)
