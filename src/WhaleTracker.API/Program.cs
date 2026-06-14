@@ -582,11 +582,17 @@ static void EnsureHyperliquidCopySchema(WhaleTrackerDbContext db)
             adopt_active_only_when_negative BOOLEAN NOT NULL DEFAULT TRUE,
             copy_active_on_enable BOOLEAN NOT NULL DEFAULT TRUE,
             last_seen_fill_time_ms BIGINT NOT NULL DEFAULT 0,
+            last_fill_poll_at TIMESTAMPTZ NULL,
             last_sync_at TIMESTAMPTZ NULL,
             last_error TEXT NOT NULL DEFAULT '',
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE hyperliquid_copy_traders
+        ADD COLUMN IF NOT EXISTS last_fill_poll_at TIMESTAMPTZ NULL;
         """);
 
     db.Database.ExecuteSqlRaw("""
@@ -616,13 +622,29 @@ static void EnsureHyperliquidCopySchema(WhaleTrackerDbContext db)
             source_position_value_usd NUMERIC NOT NULL DEFAULT 0,
             source_margin_used_usd NUMERIC NOT NULL DEFAULT 0,
             source_unrealized_pnl_usd NUMERIC NOT NULL DEFAULT 0,
+            source_account_value_usd NUMERIC NOT NULL DEFAULT 0,
+            source_exposure_percent NUMERIC NOT NULL DEFAULT 0,
+            source_margin_percent NUMERIC NOT NULL DEFAULT 0,
             target_margin_usdt NUMERIC NOT NULL DEFAULT 0,
+            sizing_budget_usdt NUMERIC NOT NULL DEFAULT 0,
+            sizing_leverage INTEGER NOT NULL DEFAULT 0,
+            sizing_version INTEGER NOT NULL DEFAULT 0,
             last_source_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             last_copied_at TIMESTAMPTZ NULL,
             last_message TEXT NOT NULL DEFAULT '',
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+        """);
+
+    db.Database.ExecuteSqlRaw("""
+        ALTER TABLE hyperliquid_copy_positions
+            ADD COLUMN IF NOT EXISTS source_account_value_usd NUMERIC NOT NULL DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS source_exposure_percent NUMERIC NOT NULL DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS source_margin_percent NUMERIC NOT NULL DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS sizing_budget_usdt NUMERIC NOT NULL DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS sizing_leverage INTEGER NOT NULL DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS sizing_version INTEGER NOT NULL DEFAULT 0;
         """);
 
     db.Database.ExecuteSqlRaw("""

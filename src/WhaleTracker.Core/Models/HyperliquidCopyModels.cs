@@ -30,6 +30,7 @@ public class HyperliquidCopyTraderView
     public bool AdoptActiveOnlyWhenNegative { get; set; }
     public bool CopyActiveOnEnable { get; set; }
     public long LastSeenFillTimeMs { get; set; }
+    public DateTime? LastFillPollAt { get; set; }
     public DateTime? LastSyncAt { get; set; }
     public string LastError { get; set; } = string.Empty;
 }
@@ -45,7 +46,13 @@ public class HyperliquidCopyPositionView
     public decimal SourcePositionValueUsd { get; set; }
     public decimal SourceMarginUsedUsd { get; set; }
     public decimal SourceUnrealizedPnlUsd { get; set; }
+    public decimal SourceAccountValueUsd { get; set; }
+    public decimal SourceExposurePercent { get; set; }
+    public decimal SourceMarginPercent { get; set; }
     public decimal TargetMarginUsdt { get; set; }
+    public decimal SizingBudgetUsdt { get; set; }
+    public int SizingLeverage { get; set; }
+    public int SizingVersion { get; set; }
     public DateTime LastSourceSeenAt { get; set; }
     public DateTime? LastCopiedAt { get; set; }
     public string LastMessage { get; set; } = string.Empty;
@@ -107,6 +114,47 @@ public class HyperliquidCopyPositionDecision
     public string Message { get; set; } = string.Empty;
     public decimal SourceUnrealizedPnlUsd { get; set; }
     public decimal SourcePositionValueUsd { get; set; }
+    public decimal SourceAccountValueUsd { get; set; }
+    public decimal SourceExposurePercent { get; set; }
+    public decimal SourceMarginPercent { get; set; }
     public decimal TargetMarginUsdt { get; set; }
     public CopyPositionTargetResult? OkxResult { get; set; }
+}
+
+public static class HyperliquidCopySizingMath
+{
+    public static decimal TargetMarginUsdt(
+        decimal traderBudgetUsdt,
+        decimal sourcePositionValueUsd,
+        decimal sourceAccountValueUsd,
+        int targetLeverage)
+    {
+        if (traderBudgetUsdt <= 0 ||
+            sourceAccountValueUsd <= 0 ||
+            targetLeverage <= 0)
+        {
+            return 0;
+        }
+
+        var normalizedExposure = Math.Abs(sourcePositionValueUsd) / sourceAccountValueUsd;
+        return traderBudgetUsdt * normalizedExposure / targetLeverage;
+    }
+
+    public static decimal ExposurePercent(
+        decimal sourcePositionValueUsd,
+        decimal sourceAccountValueUsd)
+    {
+        return sourceAccountValueUsd > 0
+            ? Math.Abs(sourcePositionValueUsd) / sourceAccountValueUsd * 100m
+            : 0m;
+    }
+
+    public static decimal MarginPercent(
+        decimal sourceMarginUsedUsd,
+        decimal sourceAccountValueUsd)
+    {
+        return sourceAccountValueUsd > 0
+            ? Math.Abs(sourceMarginUsedUsd) / sourceAccountValueUsd * 100m
+            : 0m;
+    }
 }

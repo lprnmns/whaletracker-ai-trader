@@ -9,6 +9,8 @@ public class CopyPositionTargetRequest
     public int Leverage { get; set; } = 10;
     public string SourceEventId { get; set; } = string.Empty;
     public bool Execute { get; set; }
+    public bool CloseIfBelowMinimum { get; set; }
+    public decimal MaximumUpwardMarginDeviationPercent { get; set; } = 10m;
     public string Reason { get; set; } = string.Empty;
 }
 
@@ -92,4 +94,26 @@ public class CopyLedgerEventsResponse
     public DateTime CheckedAt { get; set; } = DateTime.UtcNow;
     public IReadOnlyList<CopyLedgerEventView> Events { get; set; } =
         Array.Empty<CopyLedgerEventView>();
+}
+
+public static class CopyTradingTargetMath
+{
+    public static bool ShouldFlattenForMinimum(
+        OrderCalculation? calculation,
+        bool closeIfBelowMinimum,
+        decimal maximumUpwardMarginDeviationPercent)
+    {
+        if (!closeIfBelowMinimum || calculation == null)
+        {
+            return false;
+        }
+
+        if (calculation.ValidationStatus == OrderValidationStatus.InsufficientMargin)
+        {
+            return true;
+        }
+
+        return calculation.IsValid &&
+            calculation.MarginDeviationPercent > Math.Max(0, maximumUpwardMarginDeviationPercent);
+    }
 }

@@ -14,6 +14,7 @@ namespace WhaleTracker.Infrastructure.Services;
 public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingService
 {
     private const string InfoUrl = "https://api.hyperliquid.xyz/info";
+    private const int CurrentSizingVersion = 3;
     private static readonly SemaphoreSlim SyncLock = new(1, 1);
 
     private static readonly HashSet<string> CopyableSymbols = new(StringComparer.OrdinalIgnoreCase)
@@ -218,22 +219,53 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
             var state = await FetchAsync<HyperliquidStateRequest, HyperliquidClearinghouseState>(
                 new HyperliquidStateRequest("clearinghouseState", address),
                 cancellationToken);
-            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var newFills = await FetchNewFillsAsync(address, trader.LastSeenFillTimeMs, nowMs, cancellationToken);
-            if (newFills.Count > 0)
+            var sourceAccountValue = state.MarginSummary.AccountValueUsd;
+            if (sourceAccountValue <= 0)
             {
-                trader.LastSeenFillTimeMs = Math.Max(trader.LastSeenFillTimeMs, newFills.Max(x => x.Time));
-                await AddEventAsync(
-                    address,
-                    string.Empty,
-                    string.Empty,
-                    "FILLS_DETECTED",
-                    $"hl-fills:{address}:{trader.LastSeenFillTimeMs}",
-                    $"{newFills.Count} new Hyperliquid fills detected.",
-                    0,
-                    true,
-                    new { fills = newFills.TakeLast(20) },
-                    cancellationToken);
+                throw new InvalidOperationException(
+                    $"Hyperliquid account value is not positive for {address}.");
+            }
+
+            var isInitialSync = trader.LastSyncAt == null;
+            var now = DateTime.UtcNow;
+            var newFills = new List<HyperliquidFill>();
+            if (trader.LastFillPollAt == null ||
+                now - trader.LastFillPollAt >= TimeSpan.FromSeconds(30))
+            {
+                trader.LastFillPollAt = now;
+                try
+                {
+                    var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    newFills = await FetchNewFillsAsync(
+                        address,
+                        trader.LastSeenFillTimeMs,
+                        nowMs,
+                        cancellationToken);
+                    if (newFills.Count > 0)
+                    {
+                        trader.LastSeenFillTimeMs = Math.Max(
+                            trader.LastSeenFillTimeMs,
+                            newFills.Max(x => x.Time));
+                        await AddEventAsync(
+                            address,
+                            string.Empty,
+                            string.Empty,
+                            "FILLS_DETECTED",
+                            $"hl-fills:{address}:{trader.LastSeenFillTimeMs}",
+                            $"{newFills.Count} new Hyperliquid fills detected.",
+                            0,
+                            true,
+                            new { fills = newFills.TakeLast(20) },
+                            cancellationToken);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Hyperliquid fill polling failed for {Address}; state sync will continue.",
+                        address);
+                }
             }
 
             var active = state.AssetPositions
@@ -264,7 +296,14 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
                     x.Side.Equals(side, StringComparison.OrdinalIgnoreCase));
 
                 var alreadyCopied = existing?.Status == "COPIED";
+                var alreadyBelowMinimum = existing?.Status == "SKIPPED_BELOW_MIN";
+                var isNewLivePosition =
+                    !isInitialSync &&
+                    (existing == null || existing.Status == "CLOSED");
                 var canAdopt = alreadyCopied ||
+                    alreadyBelowMinimum ||
+                    isNewLivePosition ||
+                    isInitialSync &&
                     trader.CopyActiveOnEnable &&
                     (!trader.AdoptActiveOnlyWhenNegative || position.UnrealizedPnlUsd <= 0);
 
@@ -274,7 +313,6 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
                 }
             }
 
-            var totalCandidateValue = candidates.Sum(x => Math.Abs(x.PositionValueUsd));
             var copied = 0;
             var skipped = 0;
             var closed = 0;
@@ -303,18 +341,32 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
                 var previousStatus = existing.Status;
                 var previousSize = existing.SourceSize;
                 var previousTargetMargin = existing.TargetMarginUsdt;
-                UpdateSourcePosition(existing, position);
+                var previousSizingBudget = existing.SizingBudgetUsdt;
+                var previousSizingLeverage = existing.SizingLeverage;
+                var previousSizingVersion = existing.SizingVersion;
+                UpdateSourcePosition(existing, position, sourceAccountValue);
 
                 var alreadyCopied = string.Equals(previousStatus, "COPIED", StringComparison.OrdinalIgnoreCase);
+                var alreadyBelowMinimum = string.Equals(
+                    previousStatus,
+                    "SKIPPED_BELOW_MIN",
+                    StringComparison.OrdinalIgnoreCase);
+                var alreadySized = alreadyCopied || alreadyBelowMinimum;
                 var sourceSizeChanged = Math.Abs(previousSize - position.Size) > 0.00000001m;
                 var shouldCopy = candidates.Contains(position);
                 if (!shouldCopy)
                 {
                     skipped++;
-                    existing.Status = position.UnrealizedPnlUsd > 0 ? "SKIPPED_PROFIT" : "SKIPPED";
+                    var opportunityAlreadyMissed = string.Equals(
+                        previousStatus,
+                        "SKIPPED_PROFIT",
+                        StringComparison.OrdinalIgnoreCase);
+                    existing.Status = opportunityAlreadyMissed || position.UnrealizedPnlUsd > 0
+                        ? "SKIPPED_PROFIT"
+                        : "SKIPPED";
                     existing.TargetMarginUsdt = 0;
-                    existing.LastMessage = position.UnrealizedPnlUsd > 0
-                        ? "Active position already in profit; opportunity considered missed."
+                    existing.LastMessage = existing.Status == "SKIPPED_PROFIT"
+                        ? "Active position was already in profit; opportunity remains missed until it closes."
                         : "Position skipped by copy rules.";
                     existing.UpdatedAt = DateTime.UtcNow;
                     decisions.Add(ToDecision(existing));
@@ -325,26 +377,35 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
                     continue;
                 }
 
-                var desiredTargetMargin = totalCandidateValue > 0
-                    ? trader.MarginPerTraderUsdt * Math.Abs(position.PositionValueUsd) / totalCandidateValue
-                    : 0;
-                var targetChangeThreshold = Math.Max(0.02m, Math.Abs(previousTargetMargin) * 0.10m);
-                var targetMarginChanged = Math.Abs(previousTargetMargin - desiredTargetMargin) >= targetChangeThreshold;
+                var desiredTargetMargin = HyperliquidCopySizingMath.TargetMarginUsdt(
+                    trader.MarginPerTraderUsdt,
+                    position.PositionValueUsd,
+                    sourceAccountValue,
+                    trader.Leverage);
+                var sizingConfigurationChanged =
+                    previousSizingVersion != CurrentSizingVersion ||
+                    previousSizingBudget != trader.MarginPerTraderUsdt ||
+                    previousSizingLeverage != trader.Leverage;
                 var executeRequested = executeOverride ?? trader.ExecuteOrders;
                 var previousErrored = string.Equals(previousStatus, "ERROR", StringComparison.OrdinalIgnoreCase);
-                var shouldAlignTarget = (!alreadyCopied && !previousErrored) ||
+                var shouldAlignTarget = (!alreadySized && !previousErrored) ||
                     sourceSizeChanged ||
-                    targetMarginChanged ||
+                    sizingConfigurationChanged ||
                     (executeRequested && existing.LastCopiedAt == null && !previousErrored);
                 var targetMargin = shouldAlignTarget ? desiredTargetMargin : previousTargetMargin;
 
-                existing.Status = "COPIED";
+                existing.Status = shouldAlignTarget ? "COPIED" : previousStatus;
                 existing.TargetMarginUsdt = targetMargin;
+                existing.SizingBudgetUsdt = trader.MarginPerTraderUsdt;
+                existing.SizingLeverage = trader.Leverage;
+                existing.SizingVersion = CurrentSizingVersion;
                 existing.LastMessage = shouldAlignTarget
-                    ? alreadyCopied
-                        ? "Source position size changed; copied target refreshed."
-                        : "Active position adopted because source PnL is not positive."
-                    : "Source position unchanged; copied target left as-is.";
+                    ? alreadySized
+                        ? "Normalized source exposure target refreshed."
+                        : "Active position adopted with normalized source exposure sizing."
+                    : alreadyBelowMinimum
+                        ? "Source position unchanged; normalized target remains below OKX minimum."
+                        : "Source position unchanged; copied target left as-is.";
                 existing.UpdatedAt = DateTime.UtcNow;
 
                 CopyPositionTargetResult? okxResult = null;
@@ -359,6 +420,8 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
                             TargetMarginUsdt = targetMargin,
                             Leverage = trader.Leverage,
                             Execute = executeRequested,
+                            CloseIfBelowMinimum = true,
+                            MaximumUpwardMarginDeviationPercent = 10m,
                             SourceEventId = key,
                             Reason = $"Hyperliquid copy {ShortAddress(address)} {position.Coin} {side}"
                         },
@@ -366,12 +429,24 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
 
                     if (okxResult.Success)
                     {
-                        if (executeRequested)
+                        if (desiredTargetMargin > 0 &&
+                            okxResult.RequestedTargetContracts <= 0)
                         {
-                            existing.LastCopiedAt = DateTime.UtcNow;
+                            existing.Status = "SKIPPED_BELOW_MIN";
+                            existing.TargetMarginUsdt = 0;
+                            existing.LastMessage =
+                                "Normalized target is below OKX minimum; position left flat.";
+                            skipped++;
                         }
+                        else
+                        {
+                            if (executeRequested)
+                            {
+                                existing.LastCopiedAt = DateTime.UtcNow;
+                            }
 
-                        copied++;
+                            copied++;
+                        }
                     }
                     else
                     {
@@ -381,7 +456,14 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
                 }
                 else
                 {
-                    copied++;
+                    if (alreadyCopied)
+                    {
+                        copied++;
+                    }
+                    else
+                    {
+                        skipped++;
+                    }
                 }
 
                 decisions.Add(ToDecision(existing, okxResult));
@@ -430,6 +512,29 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
                 closed++;
                 decisions.Add(ToDecision(existing, okxResult));
                 await AddEventAsync(address, existing.Symbol, existing.Side, "CLOSED", closeEventId, existing.LastMessage, 0, okxResult.Success, okxResult, cancellationToken);
+            }
+
+            foreach (var existing in existingPositions.Where(x =>
+                x.Status != "COPIED" &&
+                x.Status != "CLOSED" &&
+                !currentKeys.Contains(PositionKey(address, x.Symbol, x.Side))).ToList())
+            {
+                existing.Status = "CLOSED";
+                existing.TargetMarginUsdt = 0;
+                existing.LastMessage =
+                    "Source position closed; a future reopen will be treated as a new live position.";
+                existing.UpdatedAt = DateTime.UtcNow;
+                await AddEventAsync(
+                    address,
+                    existing.Symbol,
+                    existing.Side,
+                    "CLOSED",
+                    $"hl-observed-close:{address}:{existing.Symbol}:{existing.Side}:{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
+                    existing.LastMessage,
+                    0,
+                    true,
+                    null,
+                    cancellationToken);
             }
 
             trader.LastSyncAt = DateTime.UtcNow;
@@ -526,7 +631,10 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
         await Task.CompletedTask;
     }
 
-    private static void UpdateSourcePosition(HyperliquidCopyPositionEntity entity, HyperliquidPosition position)
+    private static void UpdateSourcePosition(
+        HyperliquidCopyPositionEntity entity,
+        HyperliquidPosition position,
+        decimal sourceAccountValue)
     {
         entity.Symbol = position.Coin.ToUpperInvariant();
         entity.Side = SideFromSize(position.Size);
@@ -535,6 +643,13 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
         entity.SourcePositionValueUsd = Math.Abs(position.PositionValueUsd);
         entity.SourceMarginUsedUsd = position.MarginUsedUsd;
         entity.SourceUnrealizedPnlUsd = position.UnrealizedPnlUsd;
+        entity.SourceAccountValueUsd = sourceAccountValue;
+        entity.SourceExposurePercent = HyperliquidCopySizingMath.ExposurePercent(
+            position.PositionValueUsd,
+            sourceAccountValue);
+        entity.SourceMarginPercent = HyperliquidCopySizingMath.MarginPercent(
+            position.MarginUsedUsd,
+            sourceAccountValue);
         entity.LastSourceSeenAt = DateTime.UtcNow;
     }
 
@@ -550,6 +665,9 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
             Message = entity.LastMessage,
             SourceUnrealizedPnlUsd = entity.SourceUnrealizedPnlUsd,
             SourcePositionValueUsd = entity.SourcePositionValueUsd,
+            SourceAccountValueUsd = entity.SourceAccountValueUsd,
+            SourceExposurePercent = entity.SourceExposurePercent,
+            SourceMarginPercent = entity.SourceMarginPercent,
             TargetMarginUsdt = entity.TargetMarginUsdt,
             OkxResult = okxResult
         };
@@ -566,6 +684,7 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
         AdoptActiveOnlyWhenNegative = entity.AdoptActiveOnlyWhenNegative,
         CopyActiveOnEnable = entity.CopyActiveOnEnable,
         LastSeenFillTimeMs = entity.LastSeenFillTimeMs,
+        LastFillPollAt = entity.LastFillPollAt,
         LastSyncAt = entity.LastSyncAt,
         LastError = entity.LastError
     };
@@ -581,7 +700,13 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
         SourcePositionValueUsd = entity.SourcePositionValueUsd,
         SourceMarginUsedUsd = entity.SourceMarginUsedUsd,
         SourceUnrealizedPnlUsd = entity.SourceUnrealizedPnlUsd,
+        SourceAccountValueUsd = entity.SourceAccountValueUsd,
+        SourceExposurePercent = entity.SourceExposurePercent,
+        SourceMarginPercent = entity.SourceMarginPercent,
         TargetMarginUsdt = entity.TargetMarginUsdt,
+        SizingBudgetUsdt = entity.SizingBudgetUsdt,
+        SizingLeverage = entity.SizingLeverage,
+        SizingVersion = entity.SizingVersion,
         LastSourceSeenAt = entity.LastSourceSeenAt,
         LastCopiedAt = entity.LastCopiedAt,
         LastMessage = entity.LastMessage
@@ -636,7 +761,14 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
 
     private sealed class HyperliquidClearinghouseState
     {
+        public HyperliquidMarginSummary MarginSummary { get; set; } = new();
         public List<HyperliquidAssetPosition> AssetPositions { get; set; } = new();
+    }
+
+    private sealed class HyperliquidMarginSummary
+    {
+        public string AccountValue { get; set; } = "0";
+        public decimal AccountValueUsd => ParseDecimal(AccountValue);
     }
 
     private sealed class HyperliquidAssetPosition

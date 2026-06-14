@@ -41,8 +41,26 @@ public class HyperliquidCopyPositionEntity
     [Column("source_unrealized_pnl_usd")]
     public decimal SourceUnrealizedPnlUsd { get; set; }
 
+    [Column("source_account_value_usd")]
+    public decimal SourceAccountValueUsd { get; set; }
+
+    [Column("source_exposure_percent")]
+    public decimal SourceExposurePercent { get; set; }
+
+    [Column("source_margin_percent")]
+    public decimal SourceMarginPercent { get; set; }
+
     [Column("target_margin_usdt")]
     public decimal TargetMarginUsdt { get; set; }
+
+    [Column("sizing_budget_usdt")]
+    public decimal SizingBudgetUsdt { get; set; }
+
+    [Column("sizing_leverage")]
+    public int SizingLeverage { get; set; }
+
+    [Column("sizing_version")]
+    public int SizingVersion { get; set; }
 
     [Column("last_source_seen_at")]
     public DateTime LastSourceSeenAt { get; set; } = DateTime.UtcNow;

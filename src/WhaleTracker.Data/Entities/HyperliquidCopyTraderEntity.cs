@@ -39,6 +39,9 @@ public class HyperliquidCopyTraderEntity
     [Column("last_seen_fill_time_ms")]
     public long LastSeenFillTimeMs { get; set; }
 
+    [Column("last_fill_poll_at")]
+    public DateTime? LastFillPollAt { get; set; }
+
     [Column("last_sync_at")]
     public DateTime? LastSyncAt { get; set; }
 

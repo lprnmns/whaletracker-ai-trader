@@ -93,7 +93,12 @@ public class CopyTradingService : ICopyTradingService
                 request.Side == "long" ? TradeAction.OPEN_LONG : TradeAction.OPEN_SHORT)
             : null;
 
-        if (calculation is { IsValid: false })
+        var closeBecauseBelowMinimum = CopyTradingTargetMath.ShouldFlattenForMinimum(
+            calculation,
+            request.CloseIfBelowMinimum,
+            request.MaximumUpwardMarginDeviationPercent);
+
+        if (calculation is { IsValid: false } && !closeBecauseBelowMinimum)
         {
             return new CopyPositionTargetResult
             {
@@ -108,7 +113,12 @@ public class CopyTradingService : ICopyTradingService
             };
         }
 
-        var targetContracts = calculation?.Contracts ?? 0m;
+        var effectiveTargetMargin = closeBecauseBelowMinimum
+            ? 0m
+            : request.TargetMarginUsdt;
+        var targetContracts = closeBecauseBelowMinimum
+            ? 0m
+            : calculation?.Contracts ?? 0m;
         var instrument = calculation?.Instrument ?? await _okxService.GetInstrumentInfoAsync(request.Symbol);
         if (instrument == null)
         {
@@ -143,7 +153,9 @@ public class CopyTradingService : ICopyTradingService
         {
             Success = true,
             Executed = false,
-            Message = "Ledger target calculated.",
+            Message = closeBecauseBelowMinimum
+                ? "Requested target is below OKX minimum; ledger target set to flat."
+                : "Ledger target calculated.",
             TraderId = request.TraderId,
             Symbol = request.Symbol,
             Side = request.Side,
@@ -188,7 +200,7 @@ public class CopyTradingService : ICopyTradingService
         }
 
         position.TargetContracts = targetContracts;
-        position.TargetMarginUsdt = request.TargetMarginUsdt;
+        position.TargetMarginUsdt = effectiveTargetMargin;
         position.Leverage = request.Leverage;
         position.SourceEventId = request.SourceEventId;
         position.IsActive = targetContracts > 0;
@@ -405,6 +417,10 @@ public class CopyTradingService : ICopyTradingService
             Leverage = request.Leverage <= 0 ? 10 : request.Leverage,
             SourceEventId = request.SourceEventId.Trim(),
             Execute = request.Execute,
+            CloseIfBelowMinimum = request.CloseIfBelowMinimum,
+            MaximumUpwardMarginDeviationPercent = Math.Max(
+                0,
+                request.MaximumUpwardMarginDeviationPercent),
             Reason = request.Reason
         };
     }
