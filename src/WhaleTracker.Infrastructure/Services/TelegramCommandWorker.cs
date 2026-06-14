@@ -106,6 +106,7 @@ public sealed class TelegramCommandWorker : BackgroundService
                 /leaderboard
                 /positions
                 /positions all
+                /consensus
                 /pnl
                 """;
         }
@@ -178,6 +179,30 @@ public sealed class TelegramCommandWorker : BackgroundService
             return (includeBaseline ? "Aktif pozisyonlar live+baseline\n" : "Yeni/live aktif pozisyonlar\n") +
                 string.Join("\n", rows.Select(row =>
                     $"{ShortAddress(row.TraderAddress)} {row.OkxSymbol} {row.Side.ToUpperInvariant()} {row.PositionPctOfAccount:0.##}% acc value ${row.CurrentNotionalUsd:0.##} uPnL ${row.UnrealizedPnlUsd:0.##} {row.CopyStatus} {(row.OpenedFromTracking ? "live" : "base")}"));
+        }
+
+        if (command.StartsWith("/consensus", StringComparison.OrdinalIgnoreCase))
+        {
+            var rows = (await db.CoinConsensusSnapshots
+                    .AsNoTracking()
+                    .OrderByDescending(x => x.Timestamp)
+                    .ThenByDescending(x => x.Id)
+                    .Take(500)
+                    .ToListAsync(cancellationToken))
+                .GroupBy(x => x.Coin, StringComparer.OrdinalIgnoreCase)
+                .Select(x => x.First())
+                .OrderByDescending(x => Math.Abs(x.DirectionScore))
+                .Take(12)
+                .ToList();
+            if (rows.Count == 0)
+            {
+                return "Consensus henuz yok. UI veya API'den import/refresh calistir.";
+            }
+
+            return "Smart consensus\n" +
+                "Not: Bu karar motoru traderlari tek tek kopyalamaz; coin bazli toplu bias uretir.\n" +
+                string.Join("\n", rows.Select(row =>
+                    $"{row.Coin} {row.TargetSide} score {row.DirectionScore:+0.0;-0.0;0.0} q {row.QualityScore:0.0} conf {row.ConflictRatio:0.##} part {row.Participation:P0} {row.Action} target ${row.TargetNotionalUsd:0.##} n={row.ContributorCount} {row.SkipReason}"));
         }
 
         if (command.StartsWith("/pnl", StringComparison.OrdinalIgnoreCase))

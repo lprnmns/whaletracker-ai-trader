@@ -79,6 +79,17 @@ public class WhaleTrackerDbContext : DbContext
     public DbSet<HyperliquidLiveScoreSnapshotEntity> HyperliquidLiveScoreSnapshots =>
         Set<HyperliquidLiveScoreSnapshotEntity>();
 
+    public DbSet<TraderCoinProfileEntity> TraderCoinProfiles => Set<TraderCoinProfileEntity>();
+
+    public DbSet<TraderCoinCurrentExposureEntity> TraderCoinCurrentExposures =>
+        Set<TraderCoinCurrentExposureEntity>();
+
+    public DbSet<CoinConsensusSnapshotEntity> CoinConsensusSnapshots =>
+        Set<CoinConsensusSnapshotEntity>();
+
+    public DbSet<AggregateSignalContributionEntity> AggregateSignalContributions =>
+        Set<AggregateSignalContributionEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -240,6 +251,34 @@ public class WhaleTrackerDbContext : DbContext
             entity.HasIndex(e => new { e.TraderAddress, e.ScoredAt });
             entity.HasIndex(e => e.LiveScore);
             entity.HasIndex(e => e.ScoredAt);
+        });
+
+        modelBuilder.Entity<TraderCoinProfileEntity>(entity =>
+        {
+            entity.HasIndex(e => new { e.TraderAddress, e.Coin, e.WindowDays }).IsUnique();
+            entity.HasIndex(e => e.CoinSkillScore);
+            entity.HasIndex(e => e.ComputedAt);
+        });
+
+        modelBuilder.Entity<TraderCoinCurrentExposureEntity>(entity =>
+        {
+            entity.HasIndex(e => new { e.TraderAddress, e.Coin }).IsUnique();
+            entity.HasIndex(e => e.WeightedSignal);
+            entity.HasIndex(e => e.UpdatedAt);
+        });
+
+        modelBuilder.Entity<CoinConsensusSnapshotEntity>(entity =>
+        {
+            entity.HasIndex(e => new { e.Coin, e.Timestamp });
+            entity.HasIndex(e => e.DirectionScore);
+            entity.HasIndex(e => e.Timestamp);
+        });
+
+        modelBuilder.Entity<AggregateSignalContributionEntity>(entity =>
+        {
+            entity.HasIndex(e => e.CoinConsensusSnapshotId);
+            entity.HasIndex(e => new { e.TraderAddress, e.Coin });
+            entity.HasIndex(e => e.CreatedAt);
         });
     }
 }

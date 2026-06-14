@@ -255,6 +255,54 @@ type HyperliquidLiveLeaderboard = {
   recentFills: HyperliquidLiveFill[]
 }
 
+type CoinConsensusView = {
+  id: number
+  coin: string
+  timestamp: string
+  longPower: number
+  shortPower: number
+  netSignal: number
+  participation: number
+  conflictRatio: number
+  directionScore: number
+  qualityScore: number
+  targetSide: string
+  targetNotionalUsd: number
+  action: string
+  skipReason: string
+  contributorCount: number
+  topContributorsJson: string
+}
+
+type TraderCoinExposureView = {
+  traderAddress: string
+  label: string
+  coin: string
+  side: string
+  currentNotionalUsd: number
+  currentAccountValueUsd: number
+  currentAllocPct: number
+  unrealizedPnlUsd: number
+  entryPrice: number
+  openedAt: string
+  lastSeenAt: string
+  normalizedExposure: number
+  allocationConviction: number
+  coinSkillScore: number
+  sampleConfidence: number
+  freshnessScore: number
+  riskAdjustment: number
+  weightedSignal: number
+  isBaseline: boolean
+}
+
+type HyperliquidConsensusSnapshot = {
+  checkedAt: string
+  coins: CoinConsensusView[]
+  exposures: TraderCoinExposureView[]
+  topProfiles: Array<Record<string, string | number>>
+}
+
 type GraphNode = {
   id: string
   name: string
@@ -534,6 +582,8 @@ function App() {
   const [selectedHyperTrader, setSelectedHyperTrader] = useState<HyperliquidTraderSummary | null>(null)
   const [hyperTraderDetail, setHyperTraderDetail] = useState<HyperliquidTraderDetail | null>(null)
   const [hyperLive, setHyperLive] = useState<HyperliquidLiveLeaderboard | null>(null)
+  const [hyperConsensus, setHyperConsensus] = useState<HyperliquidConsensusSnapshot | null>(null)
+  const [isConsensusImporting, setIsConsensusImporting] = useState(false)
   const [isDiscoveryRunning, setIsDiscoveryRunning] = useState(false)
   const [isTraderScanRunning, setIsTraderScanRunning] = useState(false)
   const [selected, setSelected] = useState<GraphNode | null>(null)
@@ -768,6 +818,45 @@ function App() {
     }
   }, [])
 
+  const loadHyperConsensus = useCallback(async () => {
+    try {
+      setHyperConsensus(await fetchJson<HyperliquidConsensusSnapshot>('/api/hyperliquid-consensus/snapshot'))
+    } catch (error) {
+      setAlert(error instanceof Error ? error.message : 'Hyperliquid consensus unavailable')
+    }
+  }, [])
+
+  const refreshHyperConsensus = async () => {
+    setHyperConsensus(await fetchJson<HyperliquidConsensusSnapshot>('/api/hyperliquid-consensus/refresh', {
+      method: 'POST',
+    }))
+  }
+
+  const importHyperConsensusWatchlist = async () => {
+    if (!activeHyperRun) return
+    setIsConsensusImporting(true)
+    try {
+      await fetchJson('/api/hyperliquid-consensus/import-watchlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId: activeHyperRun.id,
+          take: 40,
+          syncTraders: true,
+          rebuildProfiles: true,
+          refreshConsensus: true,
+          preserveRealExecution: true,
+        }),
+      })
+      await Promise.all([loadHyperLiveLeaderboard(), loadHyperConsensus()])
+      setAlert('')
+    } catch (error) {
+      setAlert(error instanceof Error ? error.message : 'Consensus import failed')
+    } finally {
+      setIsConsensusImporting(false)
+    }
+  }
+
   useEffect(() => {
     loadMissionState()
     const timer = window.setInterval(loadMissionState, 30000)
@@ -783,6 +872,12 @@ function App() {
     const timer = window.setInterval(loadHyperLiveLeaderboard, 15000)
     return () => window.clearInterval(timer)
   }, [loadHyperLiveLeaderboard])
+
+  useEffect(() => {
+    loadHyperConsensus()
+    const timer = window.setInterval(loadHyperConsensus, 15000)
+    return () => window.clearInterval(timer)
+  }, [loadHyperConsensus])
 
   useEffect(() => {
     const connection = new HubConnectionBuilder()
@@ -1610,6 +1705,54 @@ function App() {
               <button className="primary-action" onClick={loadHyperRuns}>
                 <RefreshCw size={16} /> Refresh reports
               </button>
+
+              <div className="section-heading">
+                <strong>Smart Consensus</strong>
+                <span>
+                  {hyperConsensus ? `Updated ${formatTime(hyperConsensus.checkedAt)}` : 'No consensus snapshot yet'} · aggregates the 40-watchlist current exposure into coin-level bias.
+                </span>
+              </div>
+              <div className="action-row">
+                <button className="primary-action" onClick={importHyperConsensusWatchlist} disabled={isConsensusImporting || !activeHyperRun}>
+                  <Database size={16} /> {isConsensusImporting ? 'Importing watchlist...' : 'Import top 40 + score'}
+                </button>
+                <button className="primary-action secondary-action" onClick={refreshHyperConsensus}>
+                  <RefreshCw size={16} /> Refresh consensus
+                </button>
+              </div>
+              <div className="compact-table">
+                <div className="table-head live-six"><span>Coin</span><span>Bias</span><span>Quality</span><span>Conflict</span><span>Action</span><span>Target</span></div>
+                {hyperConsensus?.coins.slice(0, 20).map((coin) => (
+                  <div className="table-row live-six" key={`consensus-${coin.id}`}>
+                    <span>{coin.coin}</span>
+                    <strong>{coin.targetSide} {coin.directionScore.toFixed(1)}</strong>
+                    <span>{coin.qualityScore.toFixed(1)} · n={coin.contributorCount}</span>
+                    <span>{(coin.conflictRatio * 100).toFixed(0)}% · part {(coin.participation * 100).toFixed(0)}%</span>
+                    <span>{coin.action}{coin.skipReason ? ` · ${coin.skipReason}` : ''}</span>
+                    <span>{formatUsd(coin.targetNotionalUsd)}</span>
+                  </div>
+                ))}
+                {(!hyperConsensus || hyperConsensus.coins.length === 0) && <p className="muted">No consensus output yet. Import the active report run to sync watchlist profiles.</p>}
+              </div>
+
+              <div className="section-heading">
+                <strong>Strongest exposures</strong>
+                <span>Current contributor signals feeding the consensus engine; baseline means it was already open before tracking.</span>
+              </div>
+              <div className="compact-table">
+                <div className="table-head live-six"><span>Trader</span><span>Coin</span><span>Side</span><span>Alloc</span><span>Signal</span><span>uPnL</span></div>
+                {hyperConsensus?.exposures.slice(0, 30).map((exposure, index) => (
+                  <div className="table-row live-six" key={`exposure-${exposure.traderAddress}-${exposure.coin}-${index}`}>
+                    <span title={exposure.traderAddress}>{exposure.label || shortAddress(exposure.traderAddress)}</span>
+                    <span>{exposure.coin}</span>
+                    <span>{exposure.side} {exposure.isBaseline ? 'base' : 'live'}</span>
+                    <span>{exposure.currentAllocPct.toFixed(2)}% · {formatUsd(exposure.currentNotionalUsd)}</span>
+                    <strong>{exposure.weightedSignal.toFixed(5)}</strong>
+                    <span>{formatUsd(exposure.unrealizedPnlUsd)}</span>
+                  </div>
+                ))}
+                {(!hyperConsensus || hyperConsensus.exposures.length === 0) && <p className="muted">No current exposure rows yet.</p>}
+              </div>
 
               <div className="section-heading">
                 <strong>Live Leaderboard</strong>
