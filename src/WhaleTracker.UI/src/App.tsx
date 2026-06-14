@@ -1720,16 +1720,33 @@ function App() {
                   <RefreshCw size={16} /> Refresh consensus
                 </button>
               </div>
-              <div className="compact-table">
-                <div className="table-head live-six"><span>Coin</span><span>Bias</span><span>Quality</span><span>Conflict</span><span>Action</span><span>Target</span></div>
+              <div className="consensus-list">
                 {hyperConsensus?.coins.slice(0, 20).map((coin) => (
-                  <div className="table-row live-six" key={`consensus-${coin.id}`}>
-                    <span>{coin.coin}</span>
-                    <strong>{coin.targetSide} {coin.directionScore.toFixed(1)}</strong>
-                    <span>{coin.qualityScore.toFixed(1)} · n={coin.contributorCount}</span>
-                    <span>{(coin.conflictRatio * 100).toFixed(0)}% · part {(coin.participation * 100).toFixed(0)}%</span>
-                    <span>{coin.action}{coin.skipReason ? ` · ${coin.skipReason}` : ''}</span>
-                    <span>{formatUsd(coin.targetNotionalUsd)}</span>
+                  <div className="consensus-row" key={`consensus-${coin.id}`}>
+                    <div>
+                      <strong>{coin.coin} {coin.targetSide}</strong>
+                      <span>{coin.action}{coin.skipReason ? ` · ${coin.skipReason}` : ''}</span>
+                    </div>
+                    <div>
+                      <strong>{coin.directionScore.toFixed(1)}</strong>
+                      <span>direction</span>
+                    </div>
+                    <div>
+                      <strong>{coin.qualityScore.toFixed(1)}</strong>
+                      <span>quality</span>
+                    </div>
+                    <div>
+                      <strong>{(coin.conflictRatio * 100).toFixed(0)}%</strong>
+                      <span>conflict</span>
+                    </div>
+                    <div>
+                      <strong>{coin.contributorCount}</strong>
+                      <span>traders</span>
+                    </div>
+                    <div>
+                      <strong>{formatUsd(coin.targetNotionalUsd)}</strong>
+                      <span>target</span>
+                    </div>
                   </div>
                 ))}
                 {(!hyperConsensus || hyperConsensus.coins.length === 0) && <p className="muted">No consensus output yet. Import the active report run to sync watchlist profiles.</p>}
