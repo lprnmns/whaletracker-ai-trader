@@ -101,10 +101,11 @@ public sealed class TelegramCommandWorker : BackgroundService
             command.StartsWith("/help", StringComparison.OrdinalIgnoreCase))
         {
             return """
-                WhaleTracker live commands:
+                WhaleTracker komutlari:
                 /status
                 /leaderboard
                 /positions
+                /positions all
                 /pnl
                 """;
         }
@@ -118,10 +119,14 @@ public sealed class TelegramCommandWorker : BackgroundService
                 .CountAsync(cancellationToken);
             var active = await db.HyperliquidLivePositions
                 .CountAsync(x => x.Status == "LIVE_OPEN" || x.Status == "BASELINE_OPEN", cancellationToken);
+            var liveActive = await db.HyperliquidLivePositions
+                .CountAsync(x => x.OpenedFromTracking && x.Status == "LIVE_OPEN", cancellationToken);
+            var baselineActive = await db.HyperliquidLivePositions
+                .CountAsync(x => !x.OpenedFromTracking && x.Status == "BASELINE_OPEN", cancellationToken);
             var closed = await db.HyperliquidLivePositions
-                .CountAsync(x => x.Status == "CLOSED", cancellationToken);
+                .CountAsync(x => x.OpenedFromTracking && x.Status == "CLOSED", cancellationToken);
             var fills = await db.HyperliquidLiveFills.CountAsync(cancellationToken);
-            return $"Status\nEnabled traders: {enabled}\nReal execution: {real}\nScored traders: {scores}\nActive positions: {active}\nClosed positions: {closed}\nRecorded fills: {fills}";
+            return $"Durum\nEnabled trader: {enabled}\nReal execution: {real}\nScore uretilen: {scores}\nAktif toplam: {active}\nYeni/live aktif: {liveActive}\nBaseline aktif: {baselineActive}\nLive kapanan: {closed}\nKayitli fill: {fills}";
         }
 
         if (command.StartsWith("/leaderboard", StringComparison.OrdinalIgnoreCase))
@@ -142,15 +147,21 @@ public sealed class TelegramCommandWorker : BackgroundService
                 return "No live scores yet.";
             }
 
-            return "Live leaderboard\n" + string.Join("\n", rows.Select((row, index) =>
-                $"{index + 1}. {ShortAddress(row.TraderAddress)} score {row.LiveScore:0.0} conf {row.Confidence:0.0} net ${row.NetPnlUsd:0.##} active {row.ActivePositions} closed {row.ClosedPositions}"));
+            return "Live leaderboard\n" +
+                "Not: PnL sadece takipten sonra acilan/kapanan pozisyonlardan gelir; baseline eski pozisyonlar skora girmez.\n" +
+                string.Join("\n", rows.Select((row, index) =>
+                    $"{index + 1}. {ShortAddress(row.TraderAddress)} score {row.LiveScore:0.0} conf {row.Confidence:0.0} livePnL ${row.NetPnlUsd:0.##} acct {row.PnlPctAccount:0.###}% liveAct {row.ActivePositions} closed {row.ClosedPositions} win {row.WinRate:0.#}%"));
         }
 
         if (command.StartsWith("/positions", StringComparison.OrdinalIgnoreCase))
         {
+            var includeBaseline = command.Contains(" all", StringComparison.OrdinalIgnoreCase);
             var rows = (await db.HyperliquidLivePositions
                 .AsNoTracking()
-                .Where(x => x.Status == "LIVE_OPEN" || x.Status == "BASELINE_OPEN")
+                .Where(x =>
+                    includeBaseline
+                        ? x.Status == "LIVE_OPEN" || x.Status == "BASELINE_OPEN"
+                        : x.OpenedFromTracking && x.Status == "LIVE_OPEN")
                 .OrderByDescending(x => x.LastSeenAt)
                 .Take(200)
                 .ToListAsync(cancellationToken))
@@ -159,11 +170,14 @@ public sealed class TelegramCommandWorker : BackgroundService
                 .ToList();
             if (rows.Count == 0)
             {
-                return "No active source positions.";
+                return includeBaseline
+                    ? "Aktif source pozisyon yok."
+                    : "Takip basladiktan sonra acilan aktif pozisyon yok. Eski aciklari gormek icin /positions all kullan.";
             }
 
-            return "Active positions\n" + string.Join("\n", rows.Select(row =>
-                $"{ShortAddress(row.TraderAddress)} {row.OkxSymbol} {row.Side.ToUpperInvariant()} value ${row.CurrentNotionalUsd:0.##} uPnL ${row.UnrealizedPnlUsd:0.##} {(row.OpenedFromTracking ? "live" : "base")}"));
+            return (includeBaseline ? "Aktif pozisyonlar live+baseline\n" : "Yeni/live aktif pozisyonlar\n") +
+                string.Join("\n", rows.Select(row =>
+                    $"{ShortAddress(row.TraderAddress)} {row.OkxSymbol} {row.Side.ToUpperInvariant()} {row.PositionPctOfAccount:0.##}% acc value ${row.CurrentNotionalUsd:0.##} uPnL ${row.UnrealizedPnlUsd:0.##} {row.CopyStatus} {(row.OpenedFromTracking ? "live" : "base")}"));
         }
 
         if (command.StartsWith("/pnl", StringComparison.OrdinalIgnoreCase))
@@ -176,7 +190,7 @@ public sealed class TelegramCommandWorker : BackgroundService
                 .GroupBy(x => x.TraderAddress, StringComparer.OrdinalIgnoreCase)
                 .Select(x => x.First())
                 .ToList();
-            return $"Live PnL\nRealized: ${latest.Sum(x => x.RealizedPnlUsd):0.##}\nUnrealized: ${latest.Sum(x => x.UnrealizedPnlUsd):0.##}\nNet: ${latest.Sum(x => x.NetPnlUsd):0.##}";
+            return $"Live PnL\nSadece takipten sonra acilan pozisyonlar.\nRealized: ${latest.Sum(x => x.RealizedPnlUsd):0.##}\nUnrealized: ${latest.Sum(x => x.UnrealizedPnlUsd):0.##}\nNet: ${latest.Sum(x => x.NetPnlUsd):0.##}";
         }
 
         return "Unknown command. Use /help.";

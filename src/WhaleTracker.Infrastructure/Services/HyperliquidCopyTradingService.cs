@@ -777,7 +777,7 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
             .OrderByDescending(x => x.OpenedAt)
             .FirstOrDefaultAsync(cancellationToken);
 
-        var openedFromTracking = !isInitialSync || hasNewFill;
+        var openedFromTracking = !isInitialSync;
         if (existing == null)
         {
             existing = new HyperliquidLivePositionEntity
@@ -879,16 +879,17 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
             .ToListAsync(cancellationToken);
         var closed = positions.Where(x => x.Status == "CLOSED" && x.OpenedFromTracking).ToList();
         var active = positions.Where(x => x.Status == "LIVE_OPEN" || x.Status == "BASELINE_OPEN").ToList();
+        var liveActive = active.Where(x => x.OpenedFromTracking).ToList();
         var wins = closed.Count(x => x.NetPnlUsd > 0);
         var losses = closed.Count(x => x.NetPnlUsd < 0);
         var closedCount = closed.Count;
         var winRate = closedCount > 0 ? wins / (decimal)closedCount * 100m : 0m;
         var realized = closed.Sum(x => x.NetPnlUsd);
-        var unrealized = active.Sum(x => x.UnrealizedPnlUsd);
+        var unrealized = liveActive.Sum(x => x.UnrealizedPnlUsd);
         var averageAccount = closed
             .Where(x => x.SourceAccountValueAtOpen > 0)
             .Select(x => x.SourceAccountValueAtOpen)
-            .DefaultIfEmpty(active.Select(x => x.LatestSourceAccountValueUsd).FirstOrDefault(x => x > 0))
+            .DefaultIfEmpty(liveActive.Select(x => x.LatestSourceAccountValueUsd).FirstOrDefault(x => x > 0))
             .Average();
         var pnlPctAccount = averageAccount > 0 ? realized / averageAccount * 100m : 0m;
         var copyable = positions.Count(x => x.IsOkxTradable);
@@ -903,14 +904,19 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
             .Average();
         var best = closed.Select(x => x.NetPnlUsd).DefaultIfEmpty(0).Max();
         var worst = closed.Select(x => x.NetPnlUsd).DefaultIfEmpty(0).Min();
-        var sampleScore = Math.Min(25m, closedCount * 3m + active.Count);
-        var pnlScore = Math.Clamp(17.5m + pnlPctAccount * 5m, 0m, 35m);
+        var liveSampleCount = closedCount + liveActive.Count;
+        var sampleScore = Math.Min(25m, closedCount * 3m + liveActive.Count);
+        var pnlScore = liveSampleCount > 0 ? Math.Clamp(17.5m + pnlPctAccount * 5m, 0m, 35m) : 0m;
         var winScore = closedCount > 0 ? Math.Clamp(winRate / 100m * 20m, 0m, 20m) : 0m;
-        var copyScore = positions.Count > 0
+        var copyScore = liveSampleCount > 0 && positions.Count > 0
             ? Math.Clamp(copyable / (decimal)positions.Count * 15m, 0m, 15m)
             : 0m;
-        var liveScore = Math.Clamp(sampleScore + pnlScore + winScore + copyScore, 0m, 100m);
-        var confidence = Math.Clamp(closedCount * 5m + active.Count * 3m + copyable, 0m, 100m);
+        var liveScore = liveSampleCount > 0
+            ? Math.Clamp(sampleScore + pnlScore + winScore + copyScore, 0m, 100m)
+            : 0m;
+        var confidence = liveSampleCount > 0
+            ? Math.Clamp(closedCount * 5m + liveActive.Count * 3m + copyable, 0m, 100m)
+            : 0m;
 
         _db.HyperliquidLiveScoreSnapshots.Add(new HyperliquidLiveScoreSnapshotEntity
         {
@@ -923,7 +929,7 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
             NetPnlUsd = realized + unrealized,
             PnlPctAccount = pnlPctAccount,
             ClosedPositions = closedCount,
-            ActivePositions = active.Count,
+            ActivePositions = liveActive.Count,
             Wins = wins,
             Losses = losses,
             WinRate = winRate,
