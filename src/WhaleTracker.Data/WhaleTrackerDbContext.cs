@@ -61,6 +61,15 @@ public class WhaleTrackerDbContext : DbContext
 
     public DbSet<CopyLedgerEventEntity> CopyLedgerEvents => Set<CopyLedgerEventEntity>();
 
+    public DbSet<HyperliquidCopyTraderEntity> HyperliquidCopyTraders =>
+        Set<HyperliquidCopyTraderEntity>();
+
+    public DbSet<HyperliquidCopyPositionEntity> HyperliquidCopyPositions =>
+        Set<HyperliquidCopyPositionEntity>();
+
+    public DbSet<HyperliquidCopyEventEntity> HyperliquidCopyEvents =>
+        Set<HyperliquidCopyEventEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -178,6 +187,28 @@ public class WhaleTrackerDbContext : DbContext
             entity.HasIndex(e => e.CreatedAt);
             entity.HasIndex(e => new { e.Symbol, e.Side });
             entity.HasIndex(e => e.TraderId);
+            entity.HasIndex(e => e.SourceEventId);
+        });
+
+        modelBuilder.Entity<HyperliquidCopyTraderEntity>(entity =>
+        {
+            entity.HasIndex(e => e.Address).IsUnique();
+            entity.HasIndex(e => e.IsEnabled);
+            entity.HasIndex(e => e.LastSyncAt);
+        });
+
+        modelBuilder.Entity<HyperliquidCopyPositionEntity>(entity =>
+        {
+            entity.HasIndex(e => new { e.TraderAddress, e.Symbol, e.Side }).IsUnique();
+            entity.HasIndex(e => e.Status);
+            entity.HasIndex(e => e.UpdatedAt);
+        });
+
+        modelBuilder.Entity<HyperliquidCopyEventEntity>(entity =>
+        {
+            entity.HasIndex(e => e.CreatedAt);
+            entity.HasIndex(e => e.TraderAddress);
+            entity.HasIndex(e => new { e.Symbol, e.Side });
             entity.HasIndex(e => e.SourceEventId);
         });
     }
