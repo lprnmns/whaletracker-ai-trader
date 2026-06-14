@@ -11,28 +11,14 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from okx_symbol_universe import (
+    is_okx_copyable,
+    load_okx_usdt_swap_symbols,
+    normalize_hyperliquid_symbol,
+)
 
-MAJORS = {
-    "BTC",
-    "ETH",
-    "SOL",
-    "HYPE",
-    "AVAX",
-    "LINK",
-    "WLD",
-    "SUI",
-    "AAVE",
-    "UNI",
-    "TIA",
-    "PENDLE",
-    "OP",
-    "ARB",
-    "XRP",
-    "DOGE",
-    "BNB",
-}
-TIER1 = {"BTC", "ETH", "SOL", "HYPE"}
-PORTABLE_MAJORS = {"BTC", "ETH", "SOL"}
+
+REFERENCE_COINS = {"BTC", "ETH", "SOL"}
 
 
 def dec(value: object) -> Decimal:
@@ -130,7 +116,12 @@ def load_positions(run_dir: Path) -> dict[str, list[dict[str, str]]]:
     return positions
 
 
-def build_score(summary: dict[str, str], positions: list[dict[str, str]], now: datetime) -> dict[str, str]:
+def build_score(
+    summary: dict[str, str],
+    positions: list[dict[str, str]],
+    now: datetime,
+    okx_symbols: set[str] | frozenset[str],
+) -> dict[str, str]:
     address = summary["address"].lower()
     account_value = dec(summary.get("account_value_usd"))
     equity_base = max(account_value, Decimal("30000"))
@@ -140,48 +131,47 @@ def build_score(summary: dict[str, str], positions: list[dict[str, str]], now: d
     total_notional = dec(summary.get("total_position_notional_usd"))
     margin_used = dec(summary.get("margin_used_usd"))
     total_net_pnl = dec(summary.get("net_closed_pnl_usd"))
-    copyable_notional_ratio = dec(summary.get("copyable_major_ratio_pct")) / Decimal("100")
+    okx_positions = [
+        row for row in positions if is_okx_copyable(row.get("coin", ""), okx_symbols)
+    ]
+    reference_positions = [
+        row
+        for row in okx_positions
+        if normalize_hyperliquid_symbol(row.get("coin", "")) in REFERENCE_COINS
+    ]
 
-    major_positions = [row for row in positions if row.get("coin") in MAJORS]
-    portable_positions = [row for row in major_positions if row.get("coin") in PORTABLE_MAJORS]
-    tier1_positions = [row for row in major_positions if row.get("coin") in TIER1]
-
-    major_net = sum((dec(row.get("net_pnl_usd")) for row in major_positions), Decimal("0"))
-    portable_net = sum((dec(row.get("net_pnl_usd")) for row in portable_positions), Decimal("0"))
-    hype_net = sum((dec(row.get("net_pnl_usd")) for row in major_positions if row.get("coin") == "HYPE"), Decimal("0"))
-    major_wins = sum(1 for row in major_positions if dec(row.get("net_pnl_usd")) > 0)
-    major_losses = sum(1 for row in major_positions if dec(row.get("net_pnl_usd")) < 0)
-    major_count = len(major_positions)
-    portable_count = len(portable_positions)
-    tier1_count = len(tier1_positions)
-    major_win_rate = Decimal(major_wins) / Decimal(major_count) if major_count else Decimal("0")
+    okx_net = sum((dec(row.get("net_pnl_usd")) for row in okx_positions), Decimal("0"))
+    reference_net = sum((dec(row.get("net_pnl_usd")) for row in reference_positions), Decimal("0"))
+    okx_wins = sum(1 for row in okx_positions if dec(row.get("net_pnl_usd")) > 0)
+    okx_losses = sum(1 for row in okx_positions if dec(row.get("net_pnl_usd")) < 0)
+    okx_count = len(okx_positions)
+    okx_win_rate = Decimal(okx_wins) / Decimal(okx_count) if okx_count else Decimal("0")
 
     all_entry_notional = sum((dec(row.get("entry_notional_usd")) for row in positions), Decimal("0"))
-    major_entry_notional = sum((dec(row.get("entry_notional_usd")) for row in major_positions), Decimal("0"))
-    portable_entry_notional = sum((dec(row.get("entry_notional_usd")) for row in portable_positions), Decimal("0"))
-    major_notional_ratio = major_entry_notional / all_entry_notional if all_entry_notional > 0 else Decimal("0")
-    portable_notional_ratio = portable_entry_notional / major_entry_notional if major_entry_notional > 0 else Decimal("0")
+    okx_entry_notional = sum((dec(row.get("entry_notional_usd")) for row in okx_positions), Decimal("0"))
+    okx_notional_ratio = okx_entry_notional / all_entry_notional if all_entry_notional > 0 else Decimal("0")
 
-    positive_major = [dec(row.get("net_pnl_usd")) for row in major_positions if dec(row.get("net_pnl_usd")) > 0]
-    negative_major = [dec(row.get("net_pnl_usd")) for row in major_positions if dec(row.get("net_pnl_usd")) < 0]
-    gross_major_profit = sum(positive_major, Decimal("0"))
-    gross_major_loss = abs(sum(negative_major, Decimal("0")))
-    profit_factor = gross_major_profit / gross_major_loss if gross_major_loss > 0 else (Decimal("9.99") if gross_major_profit > 0 else Decimal("0"))
+    positive_okx = [dec(row.get("net_pnl_usd")) for row in okx_positions if dec(row.get("net_pnl_usd")) > 0]
+    negative_okx = [dec(row.get("net_pnl_usd")) for row in okx_positions if dec(row.get("net_pnl_usd")) < 0]
+    gross_okx_profit = sum(positive_okx, Decimal("0"))
+    gross_okx_loss = abs(sum(negative_okx, Decimal("0")))
+    profit_factor = gross_okx_profit / gross_okx_loss if gross_okx_loss > 0 else (Decimal("9.99") if gross_okx_profit > 0 else Decimal("0"))
     profit_factor_score = clamp(profit_factor / Decimal("2.5"))
-    avg_win = average(positive_major)
-    avg_loss = abs(average(negative_major))
-    expectancy = (avg_win * major_win_rate) - (avg_loss * (Decimal("1") - major_win_rate))
+    avg_win = average(positive_okx)
+    avg_loss = abs(average(negative_okx))
+    expectancy = (avg_win * okx_win_rate) - (avg_loss * (Decimal("1") - okx_win_rate))
     expectancy_score = score_return(expectancy / equity_base, Decimal("0.03"))
 
-    max_major_trade = max((abs(dec(row.get("net_pnl_usd"))) for row in major_positions), default=Decimal("0"))
-    one_trade_concentration = max_major_trade / abs(major_net) if major_net != 0 else Decimal("0")
+    max_okx_trade = max((abs(dec(row.get("net_pnl_usd"))) for row in okx_positions), default=Decimal("0"))
+    one_trade_concentration = max_okx_trade / abs(okx_net) if okx_net != 0 else Decimal("0")
     concentration_quality = score_inverse(one_trade_concentration, Decimal("0.25"), Decimal("0.70"))
 
     max_fill_balance_pct = max((dec(row.get("max_fill_balance_pct")) for row in positions), default=Decimal("0"))
-    avg_holding_hours = average([dec(row.get("holding_hours")) for row in major_positions])
-    fills_per_day = Decimal(fill_count) / Decimal(max(1, int(dec(summary.get("days")) or Decimal("30"))))
-    active_days = distinct_active_days(positions)
-    latest_close = max((parse_time(row.get("closed_at", "")) for row in positions), default=None)
+    avg_holding_hours = average([dec(row.get("holding_hours")) for row in okx_positions])
+    days = max(1, int(dec(summary.get("days")) or Decimal("30")))
+    fills_per_day = Decimal(fill_count) / Decimal(days)
+    active_days = distinct_active_days(okx_positions)
+    latest_close = max((parse_time(row.get("closed_at", "")) for row in okx_positions), default=None)
     last_fill_age_days = Decimal("999")
     if latest_close:
         last_fill_age_days = Decimal((now - latest_close).total_seconds()) / Decimal("86400")
@@ -193,17 +183,16 @@ def build_score(summary: dict[str, str], positions: list[dict[str, str]], now: d
     notional_to_equity = total_notional / equity_base if equity_base > 0 else Decimal("0")
     margin_to_equity = margin_used / equity_base if equity_base > 0 else Decimal("0")
 
-    major_return = major_net / equity_base
-    portable_return = portable_net / equity_base
+    okx_return = okx_net / equity_base
+    target_return = Decimal("0.03") if days <= 45 else Decimal("0.10")
     profitability = Decimal("100") * (
-        Decimal("0.45") * score_return(major_return, Decimal("0.20"))
-        + Decimal("0.25") * score_return(portable_return, Decimal("0.12"))
-        + Decimal("0.20") * profit_factor_score
-        + Decimal("0.10") * (Decimal("1") if major_net > 0 else Decimal("0"))
+        Decimal("0.55") * score_return(okx_return, target_return)
+        + Decimal("0.30") * profit_factor_score
+        + Decimal("0.15") * (Decimal("1") if okx_net > 0 else Decimal("0"))
     )
 
     consistency = Decimal("100") * (
-        Decimal("0.45") * major_win_rate
+        Decimal("0.45") * okx_win_rate
         + Decimal("0.25") * expectancy_score
         + Decimal("0.30") * concentration_quality
     )
@@ -226,13 +215,11 @@ def build_score(summary: dict[str, str], positions: list[dict[str, str]], now: d
 
     position_size_score = score_inverse(max_fill_balance_pct, Decimal("20"), Decimal("85"))
     copyability = Decimal("100") * (
-        Decimal("0.25") * clamp(major_notional_ratio)
-        + Decimal("0.20") * clamp(portable_notional_ratio)
-        + Decimal("0.15") * (Decimal("1") if major_count else Decimal("0"))
+        Decimal("0.45") * clamp(okx_notional_ratio)
+        + Decimal("0.15") * (Decimal("1") if okx_count else Decimal("0"))
         + Decimal("0.15") * fill_density_score
         + Decimal("0.10") * holding_score
-        + Decimal("0.10") * position_size_score
-        + Decimal("0.05") * clamp(copyable_notional_ratio)
+        + Decimal("0.15") * position_size_score
     )
 
     leverage_proxy_score = score_inverse(notional_to_equity, Decimal("4"), Decimal("12"))
@@ -262,7 +249,7 @@ def build_score(summary: dict[str, str], positions: list[dict[str, str]], now: d
     data_completeness = Decimal("0.45") if data_truncated else Decimal("1")
     sample_quality = Decimal("100") * (
         Decimal("0.40") * clamp(Decimal(closed_count) / Decimal("30"))
-        + Decimal("0.25") * clamp(Decimal(major_count) / Decimal("15"))
+        + Decimal("0.25") * clamp(Decimal(okx_count) / Decimal("15"))
         + Decimal("0.20") * clamp(Decimal(active_days) / Decimal("15"))
         + Decimal("0.15") * data_completeness
     )
@@ -286,7 +273,7 @@ def build_score(summary: dict[str, str], positions: list[dict[str, str]], now: d
         + Decimal("0.15") * Decimal("0.35")
         + Decimal("0.15") * Decimal("0")
         + Decimal("0.10") * Decimal("0.70")
-        + Decimal("0.10") * (Decimal("1") if major_count else Decimal("0"))
+        + Decimal("0.10") * (Decimal("1") if okx_count else Decimal("0"))
         + Decimal("0.05") * Decimal("0.50")
     )
 
@@ -303,14 +290,14 @@ def build_score(summary: dict[str, str], positions: list[dict[str, str]], now: d
         confidence = min(confidence, Decimal("65"))
     if fills_per_day > Decimal("500"):
         warnings.append("very_dense_fills")
-    if major_notional_ratio < Decimal("0.50"):
-        warnings.append("low_major_notional_ratio")
+    if okx_notional_ratio < Decimal("0.50"):
+        warnings.append("low_okx_tradable_notional_ratio")
     if margin_to_equity > Decimal("0.85"):
         warnings.append("high_margin_usage")
     if notional_to_equity > Decimal("8"):
         warnings.append("high_notional_to_equity")
-    if major_count < 4:
-        warnings.append("low_major_sample")
+    if okx_count < 4:
+        warnings.append("low_okx_tradable_sample")
     if closed_count < 8:
         warnings.append("low_closed_position_sample")
 
@@ -319,14 +306,14 @@ def build_score(summary: dict[str, str], positions: list[dict[str, str]], now: d
         gate_reasons.append("account_lt_30k")
     if closed_count < 8:
         gate_reasons.append("closed_positions_lt_8")
-    if major_count < 4:
-        gate_reasons.append("major_positions_lt_4")
+    if okx_count < 4:
+        gate_reasons.append("okx_tradable_positions_lt_4")
     if last_fill_age_days > Decimal("7") and active_positions == 0:
         gate_reasons.append("not_recently_active")
     if one_trade_concentration > Decimal("0.40"):
         gate_reasons.append("one_trade_concentration")
-    if major_notional_ratio < Decimal("0.50"):
-        gate_reasons.append("major_notional_ratio_lt_50pct")
+    if okx_notional_ratio < Decimal("0.50"):
+        gate_reasons.append("okx_tradable_notional_ratio_lt_50pct")
     if data_truncated:
         gate_reasons.append("data_truncated")
 
@@ -334,8 +321,8 @@ def build_score(summary: dict[str, str], positions: list[dict[str, str]], now: d
     paper_watch_candidate = watchlist_eligible and hqs >= Decimal("70") and confidence >= Decimal("60")
 
     coin_pnl: dict[str, Decimal] = defaultdict(Decimal)
-    for row in major_positions:
-        coin_pnl[row.get("coin", "")] += dec(row.get("net_pnl_usd"))
+    for row in okx_positions:
+        coin_pnl[normalize_hyperliquid_symbol(row.get("coin", ""))] += dec(row.get("net_pnl_usd"))
     top_coins = "; ".join(f"{coin}:{money(value)}" for coin, value in sorted(coin_pnl.items(), key=lambda item: item[1], reverse=True)[:6])
 
     return {
@@ -361,29 +348,35 @@ def build_score(summary: dict[str, str], positions: list[dict[str, str]], now: d
         "fill_count": str(fill_count),
         "fills_per_day": number(fills_per_day),
         "closed_positions": str(closed_count),
-        "major_closed_positions": str(major_count),
-        "major_winning_positions": str(major_wins),
-        "major_losing_positions": str(major_losses),
-        "major_win_rate_pct": pct(major_win_rate),
-        "major_net_pnl_usd": money(major_net),
-        "portable_btc_eth_sol_net_pnl_usd": money(portable_net),
-        "hype_net_pnl_usd": money(hype_net),
+        "okx_tradable_closed_positions": str(okx_count),
+        "okx_tradable_winning_positions": str(okx_wins),
+        "okx_tradable_losing_positions": str(okx_losses),
+        "okx_tradable_win_rate_pct": pct(okx_win_rate),
+        "okx_tradable_net_pnl_usd": money(okx_net),
+        "btc_eth_sol_net_pnl_usd": money(reference_net),
         "total_net_closed_pnl_usd": money(total_net_pnl),
-        "major_return_on_current_equity_pct": pct(major_return),
-        "portable_return_on_current_equity_pct": pct(portable_return),
-        "major_notional_ratio_pct": pct(major_notional_ratio),
-        "portable_notional_ratio_pct": pct(portable_notional_ratio),
+        "okx_tradable_return_on_current_equity_pct": pct(okx_return),
+        "okx_tradable_notional_ratio_pct": pct(okx_notional_ratio),
         "one_trade_pnl_concentration_pct": pct(one_trade_concentration),
         "profit_factor": number(profit_factor),
-        "avg_major_holding_hours": number(avg_holding_hours),
+        "avg_okx_tradable_holding_hours": number(avg_holding_hours),
         "active_days": str(active_days),
         "last_fill_age_days": number(last_fill_age_days),
         "max_fill_balance_pct": number(max_fill_balance_pct),
         "notional_to_equity": number(notional_to_equity),
         "margin_to_equity_pct": pct(margin_to_equity),
         "data_truncated_or_dense": "yes" if data_truncated else "no",
-        "tier1_closed_positions": str(tier1_count),
-        "portable_closed_positions": str(portable_count),
+        "okx_symbol_universe_size": str(len(okx_symbols)),
+        "top_okx_tradable_coins": top_coins,
+        # Temporary aliases keep older UI/API consumers readable.
+        "major_closed_positions": str(okx_count),
+        "major_winning_positions": str(okx_wins),
+        "major_losing_positions": str(okx_losses),
+        "major_win_rate_pct": pct(okx_win_rate),
+        "major_net_pnl_usd": money(okx_net),
+        "major_return_on_current_equity_pct": pct(okx_return),
+        "major_notional_ratio_pct": pct(okx_notional_ratio),
+        "avg_major_holding_hours": number(avg_holding_hours),
         "top_major_coins": top_coins,
     }
 
@@ -392,10 +385,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Build a Hyperliquid historical quality scoreboard.")
     parser.add_argument("run_dir", help="Hyperliquid profile run directory.")
     parser.add_argument("--out-dir", help="Output directory. Default: run_dir/historical_scoreboard")
+    parser.add_argument("--refresh-okx-symbols", action="store_true")
     args = parser.parse_args()
 
     run_dir = Path(args.run_dir)
     out_dir = Path(args.out_dir) if args.out_dir else run_dir / "historical_scoreboard"
+    okx_cache = out_dir / "okx_usdt_swap_symbols.json"
+    okx_symbols = load_okx_usdt_swap_symbols(str(okx_cache), args.refresh_okx_symbols)
     summaries = read_csv(run_dir / "trader_summaries.csv")
     positions_by_address = load_positions(run_dir)
     now = datetime.now(timezone.utc)
@@ -405,14 +401,14 @@ def main() -> int:
         address = summary.get("address", "").lower()
         if not address:
             continue
-        rows.append(build_score(summary, positions_by_address.get(address, []), now))
+        rows.append(build_score(summary, positions_by_address.get(address, []), now, okx_symbols))
 
     rows.sort(
         key=lambda row: (
             Decimal("1") if row["watchlist_eligible"] == "yes" else Decimal("0"),
             dec(row["historical_quality_score"]),
             dec(row["confidence_score"]),
-            dec(row["major_net_pnl_usd"]),
+            dec(row["okx_tradable_net_pnl_usd"]),
         ),
         reverse=True,
     )
@@ -423,7 +419,7 @@ def main() -> int:
     (out_dir / "historical_scoreboard.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
     eligible = sum(1 for row in rows if row["watchlist_eligible"] == "yes")
     print(f"Historical scoreboard: {out_dir}")
-    print(f"traders={len(rows)} watchlist_eligible={eligible}")
+    print(f"traders={len(rows)} watchlist_eligible={eligible} okx_symbols={len(okx_symbols)}")
     return 0
 
 

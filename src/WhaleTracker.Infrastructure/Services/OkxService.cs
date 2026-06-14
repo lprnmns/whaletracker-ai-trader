@@ -42,7 +42,7 @@ public class OkxService : IOkxService
     private static OkxAccountConfiguration? _accountConfigCache;
     private static DateTime _accountConfigUpdatedAt = DateTime.MinValue;
     private static readonly object _accountConfigLock = new();
-    private const string SupportedSymbolsFileName = "data/okx_futures_symbols.json";
+    private const string SupportedSymbolsFileName = "data/okx_usdt_swap_symbols.json";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -295,6 +295,10 @@ public class OkxService : IOkxService
             }
 
             var symbols = response.Data
+                .Where(d =>
+                    string.Equals(d.InstType, "SWAP", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(d.SettleCcy, "USDT", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(d.State, "live", StringComparison.OrdinalIgnoreCase))
                 .Select(d => d.InstId?.Split('-')[0])
                 .Where(s => !string.IsNullOrWhiteSpace(s))
                 .Select(s => s!.ToUpperInvariant())
@@ -1497,6 +1501,15 @@ public class OkxInstrumentData
 {
     [JsonPropertyName("instId")]
     public string? InstId { get; set; }
+
+    [JsonPropertyName("instType")]
+    public string? InstType { get; set; }
+
+    [JsonPropertyName("settleCcy")]
+    public string? SettleCcy { get; set; }
+
+    [JsonPropertyName("state")]
+    public string? State { get; set; }
 
     [JsonPropertyName("ctVal")]
     public string? CtVal { get; set; }

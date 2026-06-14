@@ -1506,7 +1506,7 @@ function App() {
             <div className="hyperliquid-lab">
               <div className="section-heading">
                 <strong>Hyperliquid profiles</strong>
-                <span>Review active leaderboard traders by current positions, reconstructed closed positions, and copyable major PnL.</span>
+                <span>Review active leaderboard traders by current positions, reconstructed closed positions, and live OKX-perpetual PnL.</span>
               </div>
               <button className="primary-action" onClick={loadHyperRuns}>
                 <RefreshCw size={16} /> Refresh reports
@@ -1538,9 +1538,9 @@ function App() {
                     </div>
                     <div>
                       <strong>{shortAddress(row.address)}</strong>
-                      <span>HQS {Number(row.historical_quality_score || 0).toFixed(1)} · conf {Number(row.confidence_score || 0).toFixed(1)} · major {formatUsd(Number(row.major_net_pnl_usd || 0))}</span>
+                      <span>HQS {Number(row.historical_quality_score || 0).toFixed(1)} · conf {Number(row.confidence_score || 0).toFixed(1)} · OKX {formatUsd(Number(row.okx_tradable_net_pnl_usd ?? row.major_net_pnl_usd ?? 0))}</span>
                       <small>
-                        win {row.major_win_rate_pct || '--'}% · BTC/ETH/SOL {formatUsd(Number(row.portable_btc_eth_sol_net_pnl_usd || 0))} · {row.gate_reasons || row.warnings || 'clear'}
+                        win {row.okx_tradable_win_rate_pct ?? row.major_win_rate_pct ?? '--'}% · positions {row.okx_tradable_closed_positions ?? row.major_closed_positions ?? '0'} · {row.gate_reasons || row.warnings || 'clear'}
                       </small>
                     </div>
                   </button>
@@ -1549,7 +1549,7 @@ function App() {
 
               <div className="section-heading">
                 <strong>Trader shortlist</strong>
-                <span>{activeHyperRun ? activeHyperRun.id : 'Select a report run'} · sorted by copyable closed-position PnL.</span>
+                <span>{activeHyperRun ? activeHyperRun.id : 'Select a report run'} · sorted by OKX-tradable closed-position PnL.</span>
               </div>
               <div className="hyper-trader-list">
                 {hyperTraders.slice(0, 50).map((trader) => (

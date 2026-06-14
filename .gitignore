@@ -11,6 +11,7 @@
 **/appsettings.Development.json
 **/appsettings.Local.json
 data/okx_futures_symbols.json
+data/okx_usdt_swap_symbols.json
 src/WhaleTracker.API/data/
 
 # Runtime/generated data

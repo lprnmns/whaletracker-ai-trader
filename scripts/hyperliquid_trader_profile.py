@@ -36,30 +36,14 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from okx_symbol_universe import is_okx_copyable, load_okx_usdt_swap_symbols
+
 
 INFO_URL = "https://api.hyperliquid.xyz/info"
 MAX_FILLS_PER_REQUEST = 2000
 REQUEST_DELAY_SECONDS = 0.05
 MAX_REQUESTS_PER_ADDRESS = 350
-COPYABLE_MAJOR_COINS = {
-    "BTC",
-    "ETH",
-    "SOL",
-    "AVAX",
-    "LINK",
-    "HYPE",
-    "DOGE",
-    "BNB",
-    "XRP",
-    "WLD",
-    "ARB",
-    "OP",
-    "SUI",
-    "TIA",
-    "AAVE",
-    "PENDLE",
-    "UNI",
-}
+OKX_COPYABLE_SYMBOLS: frozenset[str] = frozenset()
 
 POSITION_EPSILON = Decimal("0.00000001")
 
@@ -104,6 +88,10 @@ def normalize_address(value: str) -> str:
         raise ValueError(f"Invalid address: {value}")
     int(address[2:], 16)
     return address
+
+
+def is_okx_tradable(coin: str) -> bool:
+    return is_okx_copyable(coin, OKX_COPYABLE_SYMBOLS)
 
 
 def post_info(
@@ -225,7 +213,7 @@ def fill_rows(fills: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "order_id": str(fill.get("oid") or ""),
                 "trade_id": str(fill.get("tid") or ""),
                 "hash": str(fill.get("hash") or ""),
-                "copyable_major": "yes" if coin in COPYABLE_MAJOR_COINS else "no",
+                "okx_tradable": "yes" if is_okx_tradable(coin) else "no",
             }
         )
     return rows
@@ -240,8 +228,8 @@ def sign(value: Decimal) -> int:
 
 
 def market_type(coin: str) -> str:
-    if coin in COPYABLE_MAJOR_COINS:
-        return "PERP_MAJOR"
+    if is_okx_tradable(coin):
+        return "PERP_OKX_TRADABLE"
     if coin.startswith("@") or coin.startswith("#") or ":" in coin:
         return "SPOT_OR_NON_STANDARD"
     return "PERP_OTHER"
@@ -373,7 +361,7 @@ def build_position_history(
                 "net_pnl_usd": money(net_pnl),
                 "return_on_entry_notional_pct": pct(net_pnl / item["entry_notional"] if item["entry_notional"] > 0 else Decimal("0")),
                 "fill_count": str(item["fill_count"]),
-                "copyable_major": "yes" if coin in COPYABLE_MAJOR_COINS else "no",
+                "okx_tradable": "yes" if is_okx_tradable(coin) else "no",
                 "end_position": number(end_position),
             }
         )
@@ -416,7 +404,7 @@ def build_position_history(
                 "order_id": str(fill.get("oid") or ""),
                 "trade_id": str(fill.get("tid") or ""),
                 "hash": str(fill.get("hash") or ""),
-                "copyable_major": "yes" if coin in COPYABLE_MAJOR_COINS else "no",
+                "okx_tradable": "yes" if is_okx_tradable(coin) else "no",
             }
         )
 
@@ -478,7 +466,7 @@ def summarize_by_coin(fills: list[dict[str, Any]]) -> list[dict[str, str]]:
         rows.append(
             {
                 "coin": coin,
-                "copyable_major": "yes" if coin in COPYABLE_MAJOR_COINS else "no",
+                "okx_tradable": "yes" if is_okx_tradable(coin) else "no",
                 "fill_count": str(fills_count),
                 "buy_count": str(item["buy_count"]),
                 "sell_count": str(item["sell_count"]),
@@ -513,7 +501,7 @@ def active_position_rows(state: dict[str, Any]) -> list[dict[str, str]]:
                 "leverage": str((position.get("leverage") or {}).get("value") or ""),
                 "margin_type": str((position.get("leverage") or {}).get("type") or ""),
                 "margin_used_usd": money(dec(position.get("marginUsed"))),
-                "copyable_major": "yes" if coin in COPYABLE_MAJOR_COINS else "no",
+                "okx_tradable": "yes" if is_okx_tradable(coin) else "no",
             }
         )
     rows.sort(key=lambda row: dec(row["position_value_usd"]), reverse=True)
@@ -534,7 +522,7 @@ def open_order_rows(orders: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "timestamp": iso_ms(int(order.get("timestamp") or 0)),
                 "reduce_only": str(order.get("reduceOnly")),
                 "order_type": str(order.get("orderType") or ""),
-                "copyable_major": "yes" if coin in COPYABLE_MAJOR_COINS else "no",
+                "okx_tradable": "yes" if is_okx_tradable(coin) else "no",
             }
         )
     return rows
@@ -675,15 +663,19 @@ def build_summary(
     fees = sum((dec(fill.get("fee")) for fill in fills), Decimal("0"))
     notional = sum((dec(fill.get("px")) * dec(fill.get("sz")) for fill in fills), Decimal("0"))
     copyable_notional = sum(
-        (dec(fill.get("px")) * dec(fill.get("sz")) for fill in fills if str(fill.get("coin") or "") in COPYABLE_MAJOR_COINS),
+        (
+            dec(fill.get("px")) * dec(fill.get("sz"))
+            for fill in fills
+            if is_okx_tradable(str(fill.get("coin") or ""))
+        ),
         Decimal("0"),
     )
     copyable_ratio = copyable_notional / notional if notional > 0 else Decimal("0")
-    active_copyable_positions = sum(1 for row in position_rows if row["copyable_major"] == "yes")
+    active_copyable_positions = sum(1 for row in position_rows if row["okx_tradable"] == "yes")
     active_positions = len(position_rows)
     closed_positions = len(closed_position_rows)
     winning_positions = sum(1 for row in closed_position_rows if dec(row.get("net_pnl_usd")) > 0)
-    copyable_closed_positions = [row for row in closed_position_rows if row.get("copyable_major") == "yes"]
+    copyable_closed_positions = [row for row in closed_position_rows if row.get("okx_tradable") == "yes"]
     copyable_net_position_pnl = sum((dec(row.get("net_pnl_usd")) for row in copyable_closed_positions), Decimal("0"))
     avg_holding_hours = (
         sum((dec(row.get("holding_hours")) for row in closed_position_rows), Decimal("0")) / Decimal(closed_positions)
@@ -713,8 +705,9 @@ def build_summary(
         "copyable_position_net_pnl_usd": money(copyable_net_position_pnl),
         "copyable_closed_position_count": len(copyable_closed_positions),
         "fill_notional_usd": money(notional),
-        "copyable_major_notional_usd": money(copyable_notional),
-        "copyable_major_ratio_pct": pct(copyable_ratio),
+        "okx_tradable_notional_usd": money(copyable_notional),
+        "okx_tradable_ratio_pct": pct(copyable_ratio),
+        "okx_symbol_universe_size": len(OKX_COPYABLE_SYMBOLS),
         "api_requests": api_stats.requests,
         "split_ranges": api_stats.split_ranges,
         "retries": api_stats.retries,
@@ -734,7 +727,7 @@ def trader_verdict(
     if account_value <= 0 and active_positions == 0:
         return "INACTIVE_OR_WITHDRAWN"
     if copyable_ratio < Decimal("0.5"):
-        return "LOW_COPYABLE_MAJOR_RATIO"
+        return "LOW_OKX_TRADABLE_RATIO"
     if net_pnl <= 0:
         return "NOT_PROFITABLE_IN_WINDOW"
     return "REVIEW_COPYABLE"
@@ -805,6 +798,7 @@ def main() -> int:
     parser.add_argument("--run-id", default="", help="Stable output run id. Defaults to UTC timestamp.")
     parser.add_argument("--skip-existing", action="store_true", help="Skip addresses with an existing summary.json in the run directory.")
     parser.add_argument("--progress-every", type=int, default=1, help="Write progress after this many processed addresses. Default: 1.")
+    parser.add_argument("--refresh-okx-symbols", action="store_true")
     args = parser.parse_args()
     global REQUEST_DELAY_SECONDS
     global MAX_REQUESTS_PER_ADDRESS
@@ -821,6 +815,11 @@ def main() -> int:
     run_id = args.run_id.strip() or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     root_out = root / args.out_dir / run_id
     root_out.mkdir(parents=True, exist_ok=True)
+    global OKX_COPYABLE_SYMBOLS
+    OKX_COPYABLE_SYMBOLS = load_okx_usdt_swap_symbols(
+        str(root_out / "okx_usdt_swap_symbols.json"),
+        args.refresh_okx_symbols,
+    )
 
     summaries: list[dict[str, Any]] = []
     progress: dict[str, Any] = {

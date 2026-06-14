@@ -17,12 +17,6 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
     private const int CurrentSizingVersion = 3;
     private static readonly SemaphoreSlim SyncLock = new(1, 1);
 
-    private static readonly HashSet<string> CopyableSymbols = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "BTC", "ETH", "SOL", "HYPE", "AVAX", "LINK", "WLD", "SUI", "AAVE",
-        "UNI", "TIA", "PENDLE", "OP", "ARB", "XRP", "DOGE", "BNB"
-    };
-
     private static readonly string[] DefaultWatchlist =
     {
         "0x9f6fed26339789725b0751f57aeac23367ceee57",
@@ -33,17 +27,20 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
     private readonly WhaleTrackerDbContext _db;
     private readonly HttpClient _httpClient;
     private readonly ICopyTradingService _copyTradingService;
+    private readonly IOkxService _okxService;
     private readonly ILogger<HyperliquidCopyTradingService> _logger;
 
     public HyperliquidCopyTradingService(
         WhaleTrackerDbContext db,
         HttpClient httpClient,
         ICopyTradingService copyTradingService,
+        IOkxService okxService,
         ILogger<HyperliquidCopyTradingService> logger)
     {
         _db = db;
         _httpClient = httpClient;
         _copyTradingService = copyTradingService;
+        _okxService = okxService;
         _logger = logger;
     }
 
@@ -274,8 +271,24 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
                 .Select(x => x!)
                 .ToList();
 
-            var currentKeys = active
-                .Select(x => PositionKey(address, x.Coin, SideFromSize(x.Size)))
+            var supportedSymbols = (await _okxService.GetSupportedSymbolsAsync())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (supportedSymbols.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "OKX live USDT perpetual symbol universe is empty; copy sync stopped safely.");
+            }
+
+            foreach (var position in active)
+            {
+                position.OkxSymbol = HyperliquidSymbolMapper.ToOkxSymbol(position.Coin);
+            }
+
+            var copyableActive = active
+                .Where(x => supportedSymbols.Contains(x.OkxSymbol))
+                .ToList();
+            var currentKeys = copyableActive
+                .Select(x => PositionKey(address, x.OkxSymbol, SideFromSize(x.Size)))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             var existingPositions = await _db.HyperliquidCopyPositions
@@ -283,16 +296,14 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
                 .ToListAsync(cancellationToken);
 
             var decisions = new List<HyperliquidCopyPositionDecision>();
-            var copyableActive = active
-                .Where(x => CopyableSymbols.Contains(x.Coin))
-                .ToList();
 
             var candidates = new List<HyperliquidPosition>();
             foreach (var position in copyableActive)
             {
                 var side = SideFromSize(position.Size);
                 var existing = existingPositions.FirstOrDefault(x =>
-                    x.Symbol.Equals(position.Coin, StringComparison.OrdinalIgnoreCase) &&
+                    (x.Symbol.Equals(position.OkxSymbol, StringComparison.OrdinalIgnoreCase) ||
+                     x.Symbol.Equals(position.Coin, StringComparison.OrdinalIgnoreCase)) &&
                     x.Side.Equals(side, StringComparison.OrdinalIgnoreCase));
 
                 var alreadyCopied = existing?.Status == "COPIED";
@@ -320,9 +331,10 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
             foreach (var position in copyableActive)
             {
                 var side = SideFromSize(position.Size);
-                var key = PositionKey(address, position.Coin, side);
+                var key = PositionKey(address, position.OkxSymbol, side);
                 var existing = existingPositions.FirstOrDefault(x =>
-                    x.Symbol.Equals(position.Coin, StringComparison.OrdinalIgnoreCase) &&
+                    (x.Symbol.Equals(position.OkxSymbol, StringComparison.OrdinalIgnoreCase) ||
+                     x.Symbol.Equals(position.Coin, StringComparison.OrdinalIgnoreCase)) &&
                     x.Side.Equals(side, StringComparison.OrdinalIgnoreCase));
 
                 if (existing == null)
@@ -330,7 +342,7 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
                     existing = new HyperliquidCopyPositionEntity
                     {
                         TraderAddress = address,
-                        Symbol = position.Coin.ToUpperInvariant(),
+                        Symbol = position.OkxSymbol,
                         Side = side,
                         CreatedAt = DateTime.UtcNow
                     };
@@ -372,7 +384,7 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
                     decisions.Add(ToDecision(existing));
                     if (!string.Equals(previousStatus, existing.Status, StringComparison.OrdinalIgnoreCase))
                     {
-                        await AddEventAsync(address, position.Coin, side, existing.Status, key, existing.LastMessage, 0, true, position, cancellationToken);
+                        await AddEventAsync(address, position.OkxSymbol, side, existing.Status, key, existing.LastMessage, 0, true, position, cancellationToken);
                     }
                     continue;
                 }
@@ -415,7 +427,7 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
                         new CopyPositionTargetRequest
                         {
                             TraderId = LedgerTraderId(address),
-                            Symbol = position.Coin,
+                            Symbol = position.OkxSymbol,
                             Side = side,
                             TargetMarginUsdt = targetMargin,
                             Leverage = trader.Leverage,
@@ -423,7 +435,7 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
                             CloseIfBelowMinimum = true,
                             MaximumUpwardMarginDeviationPercent = 10m,
                             SourceEventId = key,
-                            Reason = $"Hyperliquid copy {ShortAddress(address)} {position.Coin} {side}"
+                            Reason = $"Hyperliquid copy {ShortAddress(address)} {position.Coin}->{position.OkxSymbol} {side}"
                         },
                         cancellationToken);
 
@@ -472,7 +484,7 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
                 {
                     await AddEventAsync(
                         address,
-                        position.Coin,
+                        position.OkxSymbol,
                         side,
                         existing.Status,
                         key,
@@ -636,7 +648,7 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
         HyperliquidPosition position,
         decimal sourceAccountValue)
     {
-        entity.Symbol = position.Coin.ToUpperInvariant();
+        entity.Symbol = position.OkxSymbol;
         entity.Side = SideFromSize(position.Size);
         entity.SourceSize = position.Size;
         entity.SourceEntryPrice = position.EntryPrice;
@@ -779,6 +791,8 @@ public sealed class HyperliquidCopyTradingService : IHyperliquidCopyTradingServi
     private sealed class HyperliquidPosition
     {
         public string Coin { get; set; } = string.Empty;
+        [JsonIgnore]
+        public string OkxSymbol { get; set; } = string.Empty;
 
         [JsonPropertyName("szi")]
         public string Szi { get; set; } = "0";
