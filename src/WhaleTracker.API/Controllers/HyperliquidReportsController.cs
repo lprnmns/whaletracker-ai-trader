@@ -19,7 +19,7 @@ public sealed class HyperliquidReportsController : ControllerBase
         }
 
         var runs = root.GetDirectories()
-            .OrderByDescending(x => x.Name)
+            .OrderByDescending(x => Directory.GetLastWriteTimeUtc(x.FullName))
             .Take(30)
             .Select(x => new
             {
